@@ -20,10 +20,16 @@ import {
 
 const router = Router();
 
-router.post('/login', loginLimiter, validate(loginSchema), audit('LOGIN'), login);
+router.post('/login', validate(loginSchema), audit('LOGIN'), login);
 router.post('/refresh-token', audit('TOKEN_REFRESH'), refreshToken);
 
-
+router.post(
+  '/register',
+  // requireRole('SUPER_ADMIN'),
+  validate(registerSchema),
+  audit('USER_CREATE'),
+  register
+);
 
 
 import { bootstrapAdmin } from '../controllers/auth.controller.js';
@@ -36,12 +42,6 @@ router.post('/logout', audit('LOGOUT'), logout);
 router.get('/me', getMe);
 router.patch('/change-password', validate(changePasswordSchema), audit('PASSWORD_CHANGE'), changePassword);
 
-router.post(
-  '/register',
-  requireRole('SUPER_ADMIN'),
-  validate(registerSchema),
-  audit('USER_CREATE'),
-  register
-);
+
 
 export default router;
