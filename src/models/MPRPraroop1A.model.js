@@ -25,7 +25,7 @@ const MPRPraroop1ASchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['DRAFT', 'SUBMITTED', 'APPROVED', 'REJECTED'],
+    enum: ['DRAFT', 'SUBMITTED', 'APPROVED', 'REJECTED', 'RESUBMITTED'],
     default: 'DRAFT'
   },
   submittedBy: {

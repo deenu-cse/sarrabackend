@@ -28,6 +28,18 @@ export const submitMPR = asyncHandler(async (req, res) => {
   res.status(HTTP_STATUS.CREATED).json(new ApiResponse(HTTP_STATUS.CREATED, mpr, 'MPR submitted successfully'));
 });
 
+export const resubmitMPR = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const userId = req.user._id;
+  const formData = req.body;
+  const ip = req.ip;
+  const ua = req.get('User-Agent');
+
+  const mpr = await mprPraroop1AService.resubmitMPR(id, userId, formData, ip, ua);
+  res.status(HTTP_STATUS.OK).json(new ApiResponse(HTTP_STATUS.OK, mpr, 'MPR resubmitted successfully'));
+});
+
+
 export const getMyReports = asyncHandler(async (req, res) => {
   const userId = req.user._id;
   const { financialYear, status, page, limit } = req.query;

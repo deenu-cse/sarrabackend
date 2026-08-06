@@ -91,6 +91,35 @@ export const submitMPR = async (userId, userDistrict, userDept, formData, ip, ua
   return newForm;
 };
 
+export const resubmitMPR = async (mprId, userId, formData, ip, ua) => {
+  const { financialYear, reportingMonth, departments } = formData;
+  
+  let mpr = await MPRAbstract55.findOne({
+    _id: mprId,
+    submittedBy: userId,
+    status: 'REJECTED'
+  });
+
+  if (!mpr) {
+    throw new ApiError(HTTP_STATUS.NOT_FOUND, 'Rejected form not found or unauthorized');
+  }
+
+  mpr.departments = departments;
+  mpr.status = 'RESUBMITTED';
+  mpr.submittedAt = new Date();
+  mpr.ipAddress = ip;
+  mpr.userAgent = ua;
+  
+  mpr.revisionHistory.push({
+    status: 'RESUBMITTED',
+    changedBy: userId,
+    note: 'Resubmitted by MND Officer'
+  });
+
+  await mpr.save();
+  return mpr;
+};
+
 export const getMyMPRs = async (user, filters, page, limit) => {
   const matchObj = { isDraft: false, submittedBy: user._id };
   

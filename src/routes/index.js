@@ -8,6 +8,8 @@ import reportRoutes from './report.routes.js';
 import mprAbstract55Routes from './mprAbstract55.routes.js';
 import mprPraroop1ARoutes from './mprPraroop1A.routes.js';
 import mprPraroop1BRoutes from './mprPraroop1B.routes.js';
+import mprPraroop1CRoutes from './mprPraroop1C.routes.js';
+import mprPraroop1DRoutes from './mprPraroop1D.routes.js';
 import { apiLimiter } from '../middlewares/rateLimiter.middleware.js';
 import ApiResponse from '../utils/ApiResponse.js';
 import { HTTP_STATUS } from '../constants/http.constants.js';
@@ -30,5 +32,7 @@ router.use('/reports', reportRoutes);
 router.use('/mpr/abstract55', mprAbstract55Routes);
 router.use('/mpr/praroop1a', mprPraroop1ARoutes);
 router.use('/mpr/praroop1b', mprPraroop1BRoutes);
+router.use('/mpr/praroop1c', mprPraroop1CRoutes);
+router.use('/mpr/praroop1d', mprPraroop1DRoutes);
 
 export default router;

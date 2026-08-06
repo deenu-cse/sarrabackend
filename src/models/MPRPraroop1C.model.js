@@ -1,6 +1,6 @@
 import mongoose from 'mongoose';
 
-const MPRPraroop1BSchema = new mongoose.Schema({
+const MPRPraroop1CSchema = new mongoose.Schema({
   applicationNo: {
     type: String,
     unique: true,
@@ -8,11 +8,11 @@ const MPRPraroop1BSchema = new mongoose.Schema({
   },
   reportType: {
     type: String,
-    default: 'PRAROOP_1B'
+    default: 'PRAROOP_1C'
   },
   headCode: {
     type: String,
-    default: '55-02'
+    default: '55-03'
   },
   financialYear: {
     type: String,
@@ -63,8 +63,8 @@ const MPRPraroop1BSchema = new mongoose.Schema({
 
   // Top Summary
   totalApprovedSchemes: { type: Number, default: 0 },
-  totalRiversUnderSchemes: { type: Number, default: 0 },
-  riversCurrentlyBeingTreated: { type: Number, default: 0 },
+  totalMajorRiversUnderSchemes: { type: Number, default: 0 },
+  majorRiversCurrentlyBeingTreated: { type: Number, default: 0 },
 
   // Activity Data
   activities: [{
@@ -81,34 +81,22 @@ const MPRPraroop1BSchema = new mongoose.Schema({
         type: String,
         enum: ['Dehradun', 'Haridwar', 'Tehri', 'Pauri', 'Chamoli', 'Uttarkashi', 'Rudraprayag', 'USNagar', 'Nainital', 'Almora', 'Pithoragarh', 'Bageshwar', 'Champawat']
       },
-      // Physical (READ-ONLY)
       physicalProgressTillLastFY: { type: Number, default: 0 },
       targetUnit: { type: Number, default: 0 },
       targetSizeCubicMeter: { type: Number, default: 0 },
-      
-      // Physical (EDITABLE)
       lastMonthPhysicalProgress: { type: Number, default: 0 },
       thisMonthPhysicalProgress: { type: Number, default: 0 },
-      
-      // Physical (AUTO-CALCULATED)
       cumulativePhysicalProgress: { type: Number, default: 0 },
       totalPhysicalProgress: { type: Number, default: 0 },
-      
-      // Financial (READ-ONLY)
       sarraExpendTillLastFY: { type: Number, default: 0 },
       ratePerUnit: { type: Number, default: 0 },
       targetDeptShareLakh: { type: Number, default: 0 },
       targetSarraShareLakh: { type: Number, default: 0 },
-      
-      // Financial (EDITABLE)
       lastMonthSarraExpend: { type: Number, default: 0 },
       thisMonthSarraExpend: { type: Number, default: 0 },
-      
-      // Financial (AUTO-CALCULATED)
       totalSarraExpend: { type: Number, default: 0 }
     }],
 
-    // Activity-level totals
     districtTotals: {
       physicalProgressTillLastFY: { type: Number, default: 0 },
       targetUnit: { type: Number, default: 0 },
@@ -125,7 +113,6 @@ const MPRPraroop1BSchema = new mongoose.Schema({
     }
   }],
 
-  // Form-level computed totals
   computed: {
     grandTotalPhysicalProgress: { type: Number, default: 0 },
     grandTotalSarraExpend: { type: Number, default: 0 },
@@ -140,7 +127,7 @@ const MPRPraroop1BSchema = new mongoose.Schema({
   }
 }, { timestamps: true });
 
-MPRPraroop1BSchema.pre('save', function (next) {
+MPRPraroop1CSchema.pre('save', function (next) {
   const mpr = this;
 
   let grandTotalPhysicalProgress = 0;
@@ -245,8 +232,8 @@ MPRPraroop1BSchema.pre('save', function (next) {
   next();
 });
 
-MPRPraroop1BSchema.index({ submittedBy: 1, financialYear: 1, reportingMonth: 1, headCode: 1, isDraft: 1 }, { unique: true, partialFilterExpression: { isDraft: true } });
+MPRPraroop1CSchema.index({ submittedBy: 1, financialYear: 1, reportingMonth: 1, headCode: 1, isDraft: 1 }, { unique: true, partialFilterExpression: { isDraft: true } });
 
-const MPRPraroop1B = mongoose.model('MPRPraroop1B', MPRPraroop1BSchema);
+const MPRPraroop1C = mongoose.model('MPRPraroop1C', MPRPraroop1CSchema);
 
-export default MPRPraroop1B;
+export default MPRPraroop1C;

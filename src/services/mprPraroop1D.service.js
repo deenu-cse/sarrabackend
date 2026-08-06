@@ -1,27 +1,20 @@
-import MPRPraroop1B from '../models/MPRPraroop1B.model.js';
+import MPRPraroop1D from '../models/MPRPraroop1D.model.js';
 import ApiError from '../utils/ApiError.js';
 import { HTTP_STATUS } from '../constants/http.constants.js';
 
 const DISTRICTS = ['Dehradun', 'Haridwar', 'Tehri', 'Pauri', 'Chamoli', 'Uttarkashi', 'Rudraprayag', 'USNagar', 'Nainital', 'Almora', 'Pithoragarh', 'Bageshwar', 'Champawat'];
 
 const ACTIVITIES = [
-  { code: '55-02', name: 'प्राथमिक / विस्तृत परियोजना रिपोर्ट पर व्यय', en: 'DPR Preparation', hasPhysical: false, hasSize: false },
-  { code: '55-02(01)', name: 'समोच्च खनियां / कन्टूर ट्रेंचेज', en: 'Contour Trenches', hasPhysical: true, hasSize: true, unit: 'No.' },
-  { code: '55-02(02)', name: 'रिचार्ज पिट', en: 'Recharge Pit', hasPhysical: true, hasSize: true, unit: 'No.' },
-  { code: '55-02(03)', name: 'डग आउट पौण्ड', en: 'Dugout Ponds', hasPhysical: true, hasSize: true, unit: 'No.' },
-  { code: '55-02(04)', name: 'चाल / खाल', en: 'Chal-Khal', hasPhysical: true, hasSize: true, unit: 'No.' },
-  { code: '55-02(05)', name: 'ब्रशवुड चेक डेम', en: 'Brushwood Check Dam', hasPhysical: true, hasSize: false, unit: 'No.' },
-  { code: '55-02(06)', name: 'अस्थाई चेक डेम (पिरुल आदि चेक डेम)', en: 'Temporary Check Dam (Pirul etc.)', hasPhysical: true, hasSize: false, unit: 'No.' },
-  { code: '55-02(07)', name: 'Loose Boulder Check Dam', en: 'Loose Boulder Check Dam', hasPhysical: true, hasSize: false, unit: 'No.' },
-  { code: '55-02(08)', name: 'R:R Dry Check Dam', en: 'RR Dry Check Dam', hasPhysical: true, hasSize: false, unit: 'No.' },
-  { code: '55-02(09)', name: 'Gabion / Crate Wire Check Dam', en: 'Gabion/Crate Wire Check Dam', hasPhysical: true, hasSize: false, unit: 'No.' },
-  { code: '55-02(10)', name: 'Cemented Check Dam', en: 'Cemented Check Dam', hasPhysical: true, hasSize: false, unit: 'No.' },
-  { code: '55-02(11)', name: 'वानस्पतिक उपचार गतिविधि', en: 'Vegetative Treatment', hasPhysical: true, hasSize: false, unit: 'Ha.' },
-  { code: '55-02(12)', name: 'वनीकरण गतिविधि', en: 'Forestry Plantation', hasPhysical: true, hasSize: false, unit: 'Ha.' },
-  { code: '55-02(13)', name: 'चारा / घास रोपण', en: 'Fodder/Grass Plantation', hasPhysical: true, hasSize: false, unit: 'Ha.' },
-  { code: '55-02(14)', name: 'प्राकृतिक पुनरोत्पादन गतिविधि', en: 'ANR Activities', hasPhysical: true, hasSize: false, unit: 'Ha.' },
-  { code: '55-02(15)', name: 'वृक्षारोपण गतिविधि', en: 'Plantation Activities', hasPhysical: true, hasSize: false, unit: 'Ha.' },
-  { code: '55-02(16)', name: 'उपरोक्त गतिविधियों से कुल उपचारित जल संग्रहण क्षेत्र', en: 'Total Catchment Area Treated', hasPhysical: true, hasSize: false, unit: 'Ha.' },
+  { code: '55-04', name: 'प्राथमिक / विस्तृत परियोजना रिपोर्ट पर व्यय', en: 'DPR Preparation', hasPhysical: false, hasSize: false },
+  { code: '55-04(01)', name: 'समोच्च खन्तियां/कन्टूर ट्रेंच', en: 'Contour Trenches', hasPhysical: true, hasSize: true, unit: 'No.' },
+  { code: '55-04(02)', name: 'रिचार्ज पिट', en: 'Recharge Pit', hasPhysical: true, hasSize: true, unit: 'No.' },
+  { code: '55-04(03)', name: 'रिचार्ज शॉफ्ट', en: 'Recharge Shaft', hasPhysical: true, hasSize: true, unit: 'No.' },
+  { code: '55-04(04)', name: 'डग आउट पॉण्ड', en: 'Dugout Pond', hasPhysical: true, hasSize: true, unit: 'No.' },
+  { code: '55-04(05)', name: 'चाल / खाल', en: 'Chal-Khal', hasPhysical: true, hasSize: true, unit: 'No.' },
+  { code: '55-04(06)', name: 'मैदानी क्षेत्रों में अमृत सरोवर', en: 'Amrit Sarovar (Plains)', hasPhysical: true, hasSize: true, unit: 'No.' },
+  { code: '55-04(07)', name: 'मैदानी क्षेत्रों में अमृत सरोवर का पुनरोद्धार', en: 'Amrit Sarovar Restoration (Plains)', hasPhysical: true, hasSize: true, unit: 'No.' },
+  { code: '55-04(08)', name: 'मैदानी क्षेत्रों में बड़े तालाब', en: 'Large Ponds (Plains)', hasPhysical: true, hasSize: true, unit: 'No.' },
+  { code: '55-04(09)', name: 'मैदानी क्षेत्रों में बड़े तालाब का पुनरोद्धार', en: 'Large Ponds Restoration (Plains)', hasPhysical: true, hasSize: true, unit: 'No.' },
   { code: 'M&E', name: 'मूल्यांकन एवं अनुश्रवण / मूल्यांकन एवं अनुश्रवण पर व्यय', en: 'Monitoring & Evaluation', hasPhysical: false, hasSize: false }
 ];
 
@@ -31,7 +24,7 @@ const PREVIOUS_MONTH_MAP = {
   'December': 'November', 'January': 'December', 'February': 'January', 'March': 'February'
 };
 
-class MPRPraroop1BService {
+class MPRPraroop1DService {
   initializeActivityData() {
     return ACTIVITIES.map(act => ({
       activityCode: act.code,
@@ -59,35 +52,35 @@ class MPRPraroop1BService {
   }
 
   async saveDraft(userId, userDistrict, userDept, formData, ip, ua) {
-    const { financialYear, reportingMonth, activities, totalApprovedSchemes, totalRiversUnderSchemes, riversCurrentlyBeingTreated } = formData;
+    const { financialYear, reportingMonth, activities, totalApprovedSchemes, totalGroundwaterSitesUnderSchemes, groundwaterSitesCurrentlyBeingTreated } = formData;
     
-    let mpr = await MPRPraroop1B.findOne({
+    let mpr = await MPRPraroop1D.findOne({
       submittedBy: userId,
       financialYear,
       reportingMonth,
-      headCode: '55-02',
+      headCode: '55-04',
       isDraft: true
     });
 
     if (mpr) {
       mpr.activities = activities;
       mpr.totalApprovedSchemes = totalApprovedSchemes;
-      mpr.totalRiversUnderSchemes = totalRiversUnderSchemes;
-      mpr.riversCurrentlyBeingTreated = riversCurrentlyBeingTreated;
+      mpr.totalGroundwaterSitesUnderSchemes = totalGroundwaterSitesUnderSchemes;
+      mpr.groundwaterSitesCurrentlyBeingTreated = groundwaterSitesCurrentlyBeingTreated;
       mpr.ipAddress = ip;
       mpr.userAgent = ua;
     } else {
-      mpr = new MPRPraroop1B({
+      mpr = new MPRPraroop1D({
         financialYear,
         reportingMonth,
-        headCode: '55-02',
+        headCode: '55-04',
         submittedBy: userId,
         submittedByDistrict: userDistrict || 'Headquarters',
         submittedByDepartment: userDept,
         activities,
         totalApprovedSchemes,
-        totalRiversUnderSchemes,
-        riversCurrentlyBeingTreated,
+        totalGroundwaterSitesUnderSchemes,
+        groundwaterSitesCurrentlyBeingTreated,
         isDraft: true,
         ipAddress: ip,
         userAgent: ua
@@ -99,11 +92,11 @@ class MPRPraroop1BService {
   }
 
   async submitMPR(userId, userDistrict, userDept, formData, ip, ua) {
-    const { financialYear, reportingMonth, activities, totalApprovedSchemes, totalRiversUnderSchemes, riversCurrentlyBeingTreated } = formData;
+    const { financialYear, reportingMonth, activities, totalApprovedSchemes, totalGroundwaterSitesUnderSchemes, groundwaterSitesCurrentlyBeingTreated } = formData;
     
     const districtCode = userDistrict ? userDistrict.substring(0, 3).toUpperCase() : 'HQ';
-    const prefix = `SARRA-MPR1B-${new Date().getFullYear()}-${districtCode}-`;
-    const lastMpr = await MPRPraroop1B.findOne({ applicationNo: { $regex: `^${prefix}` } }).sort({ applicationNo: -1 });
+    const prefix = `SARRA-MPR1D-${new Date().getFullYear()}-${districtCode}-`;
+    const lastMpr = await MPRPraroop1D.findOne({ applicationNo: { $regex: `^${prefix}` } }).sort({ applicationNo: -1 });
     let nextNumber = 1;
     if (lastMpr && lastMpr.applicationNo) {
       const lastNumber = parseInt(lastMpr.applicationNo.replace(prefix, ''), 10);
@@ -111,11 +104,11 @@ class MPRPraroop1BService {
     }
     const applicationNo = `${prefix}${nextNumber.toString().padStart(4, '0')}`;
 
-    let mpr = await MPRPraroop1B.findOne({
+    let mpr = await MPRPraroop1D.findOne({
       submittedBy: userId,
       financialYear,
       reportingMonth,
-      headCode: '55-02',
+      headCode: '55-04',
       isDraft: true
     });
 
@@ -126,23 +119,23 @@ class MPRPraroop1BService {
       mpr.submittedAt = new Date();
       mpr.activities = activities;
       mpr.totalApprovedSchemes = totalApprovedSchemes;
-      mpr.totalRiversUnderSchemes = totalRiversUnderSchemes;
-      mpr.riversCurrentlyBeingTreated = riversCurrentlyBeingTreated;
+      mpr.totalGroundwaterSitesUnderSchemes = totalGroundwaterSitesUnderSchemes;
+      mpr.groundwaterSitesCurrentlyBeingTreated = groundwaterSitesCurrentlyBeingTreated;
       mpr.ipAddress = ip;
       mpr.userAgent = ua;
     } else {
-      mpr = new MPRPraroop1B({
+      mpr = new MPRPraroop1D({
         applicationNo,
         financialYear,
         reportingMonth,
-        headCode: '55-02',
+        headCode: '55-04',
         submittedBy: userId,
         submittedByDistrict: userDistrict || 'Headquarters',
         submittedByDepartment: userDept,
         activities,
         totalApprovedSchemes,
-        totalRiversUnderSchemes,
-        riversCurrentlyBeingTreated,
+        totalGroundwaterSitesUnderSchemes,
+        groundwaterSitesCurrentlyBeingTreated,
         isDraft: false,
         status: 'SUBMITTED',
         submittedAt: new Date(),
@@ -162,9 +155,9 @@ class MPRPraroop1BService {
   }
 
   async resubmitMPR(mprId, userId, formData, ip, ua) {
-    const { activities, totalApprovedSchemes, totalRiversUnderSchemes, riversCurrentlyBeingTreated } = formData;
+    const { activities, totalApprovedSchemes, totalGroundwaterSitesUnderSchemes, groundwaterSitesCurrentlyBeingTreated } = formData;
     
-    let mpr = await MPRPraroop1B.findOne({
+    let mpr = await MPRPraroop1D.findOne({
       _id: mprId,
       submittedBy: userId,
       status: 'REJECTED'
@@ -178,8 +171,8 @@ class MPRPraroop1BService {
     mpr.submittedAt = new Date();
     mpr.activities = activities;
     mpr.totalApprovedSchemes = totalApprovedSchemes;
-    mpr.totalRiversUnderSchemes = totalRiversUnderSchemes;
-    mpr.riversCurrentlyBeingTreated = riversCurrentlyBeingTreated;
+    mpr.totalGroundwaterSitesUnderSchemes = totalGroundwaterSitesUnderSchemes;
+    mpr.groundwaterSitesCurrentlyBeingTreated = groundwaterSitesCurrentlyBeingTreated;
     mpr.ipAddress = ip;
     mpr.userAgent = ua;
     
@@ -197,13 +190,13 @@ class MPRPraroop1BService {
     const query = { submittedBy: userId, isDraft: false, ...filters };
     const skip = (page - 1) * limit;
 
-    const mprs = await MPRPraroop1B.find(query)
+    const mprs = await MPRPraroop1D.find(query)
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(limit)
       .select('-activities.districts');
 
-    const total = await MPRPraroop1B.countDocuments(query);
+    const total = await MPRPraroop1D.countDocuments(query);
 
     return {
       data: mprs,
@@ -216,7 +209,7 @@ class MPRPraroop1BService {
   }
 
   async getMPRById(mprId, requestingUserId) {
-    const mpr = await MPRPraroop1B.findById(mprId)
+    const mpr = await MPRPraroop1D.findById(mprId)
       .populate('submittedBy', 'name email mobile role')
       .populate('reviewedBy', 'name email role')
       .populate('revisionHistory.changedBy', 'name role');
@@ -228,7 +221,7 @@ class MPRPraroop1BService {
   }
 
   async approveMPR(mprId, reviewerId, note) {
-    const mpr = await MPRPraroop1B.findById(mprId);
+    const mpr = await MPRPraroop1D.findById(mprId);
     if (!mpr) throw new ApiError(HTTP_STATUS.NOT_FOUND, 'MPR not found');
     
     mpr.status = 'APPROVED';
@@ -241,7 +234,7 @@ class MPRPraroop1BService {
   }
 
   async rejectMPR(mprId, reviewerId, note) {
-    const mpr = await MPRPraroop1B.findById(mprId);
+    const mpr = await MPRPraroop1D.findById(mprId);
     if (!mpr) throw new ApiError(HTTP_STATUS.NOT_FOUND, 'MPR not found');
     
     mpr.status = 'REJECTED';
@@ -257,7 +250,7 @@ class MPRPraroop1BService {
     const prevMonth = PREVIOUS_MONTH_MAP[month];
     if (!prevMonth) return null;
 
-    const prevMpr = await MPRPraroop1B.findOne({
+    const prevMpr = await MPRPraroop1D.findOne({
       submittedBy: userId,
       financialYear,
       reportingMonth: prevMonth,
@@ -312,9 +305,9 @@ class MPRPraroop1BService {
   }
   
   async getAnnualSummary(financialYear) {
-     const mprs = await MPRPraroop1B.find({ financialYear, isDraft: false });
+     const mprs = await MPRPraroop1D.find({ financialYear, isDraft: false });
      return mprs;
   }
 }
 
-export default new MPRPraroop1BService();
+export default new MPRPraroop1DService();

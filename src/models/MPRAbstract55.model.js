@@ -33,7 +33,7 @@ const mprAbstract55Schema = new Schema({
   },
   status: { 
     type: String, 
-    enum: ['DRAFT', 'SUBMITTED', 'APPROVED', 'REJECTED'],
+    enum: ['DRAFT', 'SUBMITTED', 'APPROVED', 'REJECTED', 'RESUBMITTED'],
     required: true,
     default: 'DRAFT'
   },

@@ -101,9 +101,15 @@ class MPRPraroop1AService {
   async submitMPR(userId, userDistrict, userDept, formData, ip, ua) {
     const { financialYear, reportingMonth, activities, totalApprovedSchemes, totalSpringsUnderSchemes, springsCurrentlyBeingTreated } = formData;
     
-    const latestCount = await MPRPraroop1A.countDocuments({ submittedByDistrict: userDistrict });
     const districtCode = userDistrict ? userDistrict.substring(0, 3).toUpperCase() : 'HQ';
-    const applicationNo = `SARRA-MPR1A-${new Date().getFullYear()}-${districtCode}-${(latestCount + 1).toString().padStart(4, '0')}`;
+    const prefix = `SARRA-MPR1A-${new Date().getFullYear()}-${districtCode}-`;
+    const lastMpr = await MPRPraroop1A.findOne({ applicationNo: { $regex: `^${prefix}` } }).sort({ applicationNo: -1 });
+    let nextNumber = 1;
+    if (lastMpr && lastMpr.applicationNo) {
+      const lastNumber = parseInt(lastMpr.applicationNo.replace(prefix, ''), 10);
+      if (!isNaN(lastNumber)) nextNumber = lastNumber + 1;
+    }
+    const applicationNo = `${prefix}${nextNumber.toString().padStart(4, '0')}`;
 
     let mpr = await MPRPraroop1A.findOne({
       submittedBy: userId,
@@ -149,6 +155,38 @@ class MPRPraroop1AService {
       status: 'SUBMITTED',
       changedBy: userId,
       note: 'Initial Submission'
+    });
+
+    await mpr.save();
+    return mpr;
+  }
+
+  async resubmitMPR(mprId, userId, formData, ip, ua) {
+    const { activities, totalApprovedSchemes, totalSpringsUnderSchemes, springsCurrentlyBeingTreated } = formData;
+    
+    let mpr = await MPRPraroop1A.findOne({
+      _id: mprId,
+      submittedBy: userId,
+      status: 'REJECTED'
+    });
+
+    if (!mpr) {
+      throw new ApiError(HTTP_STATUS.NOT_FOUND, 'Rejected MPR not found or unauthorized');
+    }
+
+    mpr.status = 'RESUBMITTED';
+    mpr.submittedAt = new Date();
+    mpr.activities = activities;
+    mpr.totalApprovedSchemes = totalApprovedSchemes;
+    mpr.totalSpringsUnderSchemes = totalSpringsUnderSchemes;
+    mpr.springsCurrentlyBeingTreated = springsCurrentlyBeingTreated;
+    mpr.ipAddress = ip;
+    mpr.userAgent = ua;
+    
+    mpr.revisionHistory.push({
+      status: 'RESUBMITTED',
+      changedBy: userId,
+      note: 'Resubmitted by MND Officer'
     });
 
     await mpr.save();

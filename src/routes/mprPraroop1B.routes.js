@@ -9,6 +9,7 @@ router.use(verifyAccessToken);
 
 router.post('/draft', requireRole('MND_OFFICER', 'DD_OFFICER', 'MND_ADMIN'), mprPraroop1BController.saveDraft);
 router.post('/submit', requireRole('MND_OFFICER', 'DD_OFFICER', 'MND_ADMIN'), mprPraroop1BController.submitMPR);
+router.patch('/:id/resubmit', requireRole('MND_OFFICER', 'DD_OFFICER', 'MND_ADMIN'), mprPraroop1BController.resubmitMPR);
 
 router.get('/my-reports', requireRole('MND_OFFICER', 'MND_SUPER_ADMIN', 'MND_ADMIN'), mprPraroop1BController.getMyReports);
 router.get('/all-reports', requireRole('MND_SUPER_ADMIN', 'MND_ADMIN'), mprPraroop1BController.getMyReports);
