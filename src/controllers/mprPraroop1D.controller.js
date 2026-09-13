@@ -3,6 +3,7 @@ import ApiResponse from '../utils/ApiResponse.js';
 import mprPraroop1DService from '../services/mprPraroop1D.service.js';
 import MPRPraroop1D from '../models/MPRPraroop1D.model.js';
 import { HTTP_STATUS } from '../constants/http.constants.js';
+import ApiError from '../utils/ApiError.js';
 
 export const saveDraft = asyncHandler(async (req, res) => {
   const userId = req.user._id;
@@ -92,3 +93,64 @@ export const getAnnualSummary = asyncHandler(async (req, res) => {
   const data = await mprPraroop1DService.getAnnualSummary(financialYear);
   res.status(HTTP_STATUS.OK).json(new ApiResponse(HTTP_STATUS.OK, data, 'Annual summary retrieved'));
 });
+
+/** GET /all-district — DD fetches MPRs for their district */
+export const getDistrictReports = asyncHandler(async (req, res) => {
+  const district = req.user.district;
+  if (!district) throw new ApiError(HTTP_STATUS.BAD_REQUEST, 'District not set for user');
+  const { status, financialYear, page = 1, limit = 20 } = req.query;
+  const query = { submittedByDistrict: new RegExp(`^${district}$`, 'i') };
+  if (status) query.status = status;
+  if (financialYear) query.financialYear = financialYear;
+  const mprs = await MPRPraroop1D.find(query)
+    .populate('submittedBy', 'name department')
+    .populate('projectSanctionId', 'projectTitle sanctionId')
+    .sort({ submittedAt: -1 })
+    .skip((parseInt(page) - 1) * parseInt(limit))
+    .limit(parseInt(limit));
+  res.status(HTTP_STATUS.OK).json(new ApiResponse(HTTP_STATUS.OK, mprs, 'District MPRs retrieved'));
+});
+
+/** PATCH /:id/district-approve — DD approves an MPR */
+export const districtApprove = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const mpr = await MPRPraroop1D.findById(id);
+  if (!mpr) throw new ApiError(HTTP_STATUS.NOT_FOUND, 'MPR not found');
+  if (req.user.role === 'DD_LEVEL') {
+    if (!req.user.district || mpr.submittedByDistrict?.toLowerCase() !== req.user.district?.toLowerCase()) {
+      throw new ApiError(HTTP_STATUS.FORBIDDEN, 'Not in your district');
+    }
+  }
+  mpr.status = 'DISTRICT_APPROVED';
+  mpr.districtApprovedBy = req.user._id;
+  mpr.districtApprovedAt = new Date();
+  mpr.revisionHistory.push({
+    status: 'DISTRICT_APPROVED',
+    changedBy: req.user._id,
+    note: req.body.note || 'Approved by District Officer (DD)'
+  });
+  await mpr.save();
+  res.status(HTTP_STATUS.OK).json(new ApiResponse(HTTP_STATUS.OK, mpr, 'MPR approved by district'));
+});
+
+/** PATCH /:id/return — DD returns MPR to PIA for correction */
+export const returnToMaker = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const mpr = await MPRPraroop1D.findById(id);
+  if (!mpr) throw new ApiError(HTTP_STATUS.NOT_FOUND, 'MPR not found');
+  if (req.user.role === 'DD_LEVEL') {
+    if (!req.user.district || mpr.submittedByDistrict?.toLowerCase() !== req.user.district?.toLowerCase()) {
+      throw new ApiError(HTTP_STATUS.FORBIDDEN, 'Not in your district');
+    }
+  }
+  mpr.status = 'RETURNED_TO_PIA';
+  mpr.returnReason = req.body.reason || 'Returned for correction';
+  mpr.revisionHistory.push({
+    status: 'RETURNED_TO_PIA',
+    changedBy: req.user._id,
+    note: req.body.reason || 'Returned for correction'
+  });
+  await mpr.save();
+  res.status(HTTP_STATUS.OK).json(new ApiResponse(HTTP_STATUS.OK, mpr, 'MPR returned to PIA'));
+});
+

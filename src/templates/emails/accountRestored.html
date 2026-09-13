@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Access Restored — SARRA CRM</title>
+</head>
+<body style="margin:0;padding:0;background:#f1f5f9;font-family:'Segoe UI',Tahoma,Geneva,Verdana,sans-serif;">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f1f5f9;padding:40px 16px;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:560px;background:#ffffff;border-radius:16px;overflow:hidden;border:1px solid #e2e8f0;box-shadow:0 10px 30px rgba(15,23,42,0.08);">
+          <tr>
+            <td style="background:linear-gradient(135deg,#065f46 0%,#047857 60%,#0b1f3a 100%);padding:34px 32px;text-align:center;">
+              <p style="margin:0;color:#a7f3d0;font-size:11px;letter-spacing:2.5px;text-transform:uppercase;font-weight:600;">Good news</p>
+              <h1 style="margin:10px 0 0;color:#ffffff;font-size:26px;letter-spacing:0.5px;">Access Restored</h1>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:32px;">
+              <p style="margin:0 0 10px;color:#0f172a;font-size:17px;font-weight:700;">Hello {{name}},</p>
+              <p style="margin:0 0 22px;color:#475569;font-size:15px;line-height:1.65;">
+                Your SARRA CRM Portal account has been <strong style="color:#047857;">restored</strong>
+                by {{adminName}}. You can sign in again with your existing credentials.
+              </p>
+
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#ecfdf5;border:1px solid #a7f3d0;border-radius:12px;margin-bottom:24px;">
+                <tr>
+                  <td style="padding:18px 20px;">
+                    <p style="margin:0 0 6px;color:#065f46;font-size:11px;text-transform:uppercase;letter-spacing:1px;font-weight:700;">Previous status</p>
+                    <p style="margin:0;color:#064e3b;font-size:15px;font-weight:700;">{{previousStatus}}</p>
+                    <p style="margin:8px 0 0;color:#047857;font-size:13px;">Restored on {{restoredAt}}</p>
+                  </td>
+                </tr>
+              </table>
+
+              <div style="text-align:center;margin:8px 0 4px;">
+                <a href="{{loginLink}}" style="display:inline-block;background:#0b1f3a;color:#ffffff;text-decoration:none;font-weight:700;font-size:14px;padding:14px 28px;border-radius:10px;">
+                  Sign in to SARRA CRM
+                </a>
+              </div>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:0 32px 28px;">
+              <p style="margin:0;color:#94a3b8;font-size:12px;line-height:1.55;">
+                If you did not expect this email, contact
+                <a href="mailto:support@sarra.uk.gov.in" style="color:#123a66;">support@sarra.uk.gov.in</a>.
+              </p>
+            </td>
+          </tr>
+          <tr>
+            <td style="background:#f8fafc;padding:16px 32px;border-top:1px solid #e2e8f0;text-align:center;">
+              <p style="margin:0;color:#94a3b8;font-size:12px;">© {{year}} SARRA · Government of Uttarakhand</p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>

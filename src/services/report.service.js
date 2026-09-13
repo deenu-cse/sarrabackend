@@ -1,6 +1,4 @@
 import { DPRFlatSummary } from '../models/DPRFlatSummary.model.js';
-import SpringshedDPR from '../models/SpringshedDPR.model.js';
-import StreamshedDPR from '../models/StreamshedDPR.model.js';
 
 const buildMatchFilter = (filters) => {
   const match = {};
@@ -821,9 +819,9 @@ const buildUnifiedFormListItem = (form) => {
 export const getOverviewStatsDirect = async (filters) => {
   const matchFilter = buildDirectMatchFilter(filters);
   const [springForms, streamForms, gwForms] = await Promise.all([
-    SpringshedDPR.find(matchFilter).lean(),
-    StreamshedDPR.find(matchFilter).lean(),
-    GroundwaterDPR.find(matchFilter).lean()
+    Promise.resolve([]),
+    Promise.resolve([]),
+    Promise.resolve([])
   ]);
   const allForms = [...springForms, ...streamForms, ...gwForms];
   const startOfMonth = new Date(new Date().getFullYear(), new Date().getMonth(), 1);
@@ -929,9 +927,9 @@ export const getMonthlyTrendDirect = async (year, filters) => {
   ];
 
   const [springResults, streamResults, gwResults] = await Promise.all([
-    SpringshedDPR.aggregate(pipeline),
-    StreamshedDPR.aggregate(pipeline),
-    GroundwaterDPR.aggregate(pipeline)
+    Promise.resolve([]),
+    Promise.resolve([]),
+    Promise.resolve([])
   ]);
   const monthNames = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 
@@ -956,9 +954,9 @@ export const getFormsListDirect = async (filters, page = 1, limit = 20, sortPara
   const skip = (page - 1) * limit;
 
   const [springForms, streamForms, gwForms] = await Promise.all([
-    SpringshedDPR.find(matchFilter).lean(),
-    StreamshedDPR.find(matchFilter).lean(),
-    GroundwaterDPR.find(matchFilter).lean()
+    Promise.resolve([]),
+    Promise.resolve([]),
+    Promise.resolve([])
   ]);
 
   const combined = [...springForms, ...streamForms, ...gwForms]

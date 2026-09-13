@@ -160,14 +160,14 @@ class MPRPraroop1DService {
     let mpr = await MPRPraroop1D.findOne({
       _id: mprId,
       submittedBy: userId,
-      status: 'REJECTED'
+      status: { $in: ['REJECTED', 'RETURNED_TO_PIA'] }
     });
 
     if (!mpr) {
       throw new ApiError(HTTP_STATUS.NOT_FOUND, 'Rejected MPR not found or unauthorized');
     }
 
-    mpr.status = 'RESUBMITTED';
+    mpr.status = 'SUBMITTED';
     mpr.submittedAt = new Date();
     mpr.activities = activities;
     mpr.totalApprovedSchemes = totalApprovedSchemes;
@@ -177,9 +177,9 @@ class MPRPraroop1DService {
     mpr.userAgent = ua;
     
     mpr.revisionHistory.push({
-      status: 'RESUBMITTED',
+      status: 'SUBMITTED',
       changedBy: userId,
-      note: 'Resubmitted by MND Officer'
+      note: 'Resubmitted by PIA Officer'
     });
 
     await mpr.save();
@@ -212,6 +212,7 @@ class MPRPraroop1DService {
     const mpr = await MPRPraroop1D.findById(mprId)
       .populate('submittedBy', 'name email mobile role')
       .populate('reviewedBy', 'name email role')
+      .populate('districtApprovedBy', 'name email role')
       .populate('revisionHistory.changedBy', 'name role');
 
     if (!mpr) {

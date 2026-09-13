@@ -1,0 +1,461 @@
+{
+  "financialYear": "2025-26",
+  "reportingMonth": "September",
+  "projectSanctionId": "6a9e570fdf166eb5a091177b",
+  "sanctionId": "SANC-2026-ALM-00003",
+  "totalApprovedSchemes": 1,
+  "totalRiversUnderSchemes": 12,
+  "riversCurrentlyBeingTreated": 7,
+  "activities": [
+    {
+      "activityCode": "55-02",
+      "activityName": "प्राथमिक / विस्तृत परियोजना रिपोर्ट पर व्यय",
+      "activityEnglishName": "DPR Preparation",
+      "unit": "",
+      "hasPhysical": false,
+      "hasSize": false,
+      "isHeader": false,
+      "districts": [
+        {
+          "districtName": "Almora",
+          "physicalProgressTillLastFY": 0,
+          "targetUnit": 0,
+          "targetSizeCubicMeter": 0,
+          "sarraExpendTillLastFY": 2.5,
+          "ratePerUnit": 0,
+          "targetDeptShareLakh": 1.2,
+          "targetSarraShareLakh": 2.5,
+          "lastMonthPhysicalProgress": 0,
+          "thisMonthPhysicalProgress": 0,
+          "lastMonthSarraExpend": 0.4,
+          "thisMonthSarraExpend": 0.35
+        }
+      ]
+    },
+    {
+      "activityCode": "55-02(01)",
+      "activityName": "समोच्च खनियां / कन्टूर ट्रेंचेज",
+      "activityEnglishName": "Contour Trenches",
+      "unit": "No.",
+      "hasPhysical": true,
+      "hasSize": true,
+      "isHeader": false,
+      "districts": [
+        {
+          "districtName": "Almora",
+          "physicalProgressTillLastFY": 120,
+          "targetUnit": 450,
+          "targetSizeCubicMeter": 225,
+          "sarraExpendTillLastFY": 8.4,
+          "ratePerUnit": 0.05,
+          "targetDeptShareLakh": 12,
+          "targetSarraShareLakh": 15,
+          "lastMonthPhysicalProgress": 28,
+          "thisMonthPhysicalProgress": 35,
+          "lastMonthSarraExpend": 1.4,
+          "thisMonthSarraExpend": 1.75
+        }
+      ]
+    },
+    {
+      "activityCode": "55-02(02)",
+      "activityName": "रिचार्ज पिट",
+      "activityEnglishName": "Recharge Pit",
+      "unit": "No.",
+      "hasPhysical": true,
+      "hasSize": true,
+      "isHeader": false,
+      "districts": [
+        {
+          "districtName": "Almora",
+          "physicalProgressTillLastFY": 45,
+          "targetUnit": 180,
+          "targetSizeCubicMeter": 90,
+          "sarraExpendTillLastFY": 4.2,
+          "ratePerUnit": 0.08,
+          "targetDeptShareLakh": 6,
+          "targetSarraShareLakh": 8,
+          "lastMonthPhysicalProgress": 12,
+          "thisMonthPhysicalProgress": 18,
+          "lastMonthSarraExpend": 0.96,
+          "thisMonthSarraExpend": 1.44
+        }
+      ]
+    },
+    {
+      "activityCode": "55-02(03)",
+      "activityName": "डग आउट पौण्ड",
+      "activityEnglishName": "Dugout Ponds",
+      "unit": "No.",
+      "hasPhysical": true,
+      "hasSize": true,
+      "isHeader": false,
+      "districts": [
+        {
+          "districtName": "Almora",
+          "physicalProgressTillLastFY": 8,
+          "targetUnit": 25,
+          "targetSizeCubicMeter": 1250,
+          "sarraExpendTillLastFY": 6.5,
+          "ratePerUnit": 0.85,
+          "targetDeptShareLakh": 10,
+          "targetSarraShareLakh": 12,
+          "lastMonthPhysicalProgress": 2,
+          "thisMonthPhysicalProgress": 3,
+          "lastMonthSarraExpend": 1.7,
+          "thisMonthSarraExpend": 2.55
+        }
+      ]
+    },
+    {
+      "activityCode": "55-02(04)",
+      "activityName": "चाल / खाल",
+      "activityEnglishName": "Chal-Khal",
+      "unit": "No.",
+      "hasPhysical": true,
+      "hasSize": true,
+      "isHeader": false,
+      "districts": [
+        {
+          "districtName": "Almora",
+          "physicalProgressTillLastFY": 22,
+          "targetUnit": 60,
+          "targetSizeCubicMeter": 480,
+          "sarraExpendTillLastFY": 5.1,
+          "ratePerUnit": 0.35,
+          "targetDeptShareLakh": 8,
+          "targetSarraShareLakh": 9,
+          "lastMonthPhysicalProgress": 5,
+          "thisMonthPhysicalProgress": 7,
+          "lastMonthSarraExpend": 1.75,
+          "thisMonthSarraExpend": 2.45
+        }
+      ]
+    },
+    {
+      "activityCode": "55-02(05)",
+      "activityName": "ब्रशवुड चेक डेम",
+      "activityEnglishName": "Brushwood Check Dam",
+      "unit": "No.",
+      "hasPhysical": true,
+      "hasSize": false,
+      "isHeader": false,
+      "districts": [
+        {
+          "districtName": "Almora",
+          "physicalProgressTillLastFY": 30,
+          "targetUnit": 90,
+          "targetSizeCubicMeter": 0,
+          "sarraExpendTillLastFY": 1.8,
+          "ratePerUnit": 0.04,
+          "targetDeptShareLakh": 2,
+          "targetSarraShareLakh": 2.5,
+          "lastMonthPhysicalProgress": 8,
+          "thisMonthPhysicalProgress": 10,
+          "lastMonthSarraExpend": 0.32,
+          "thisMonthSarraExpend": 0.4
+        }
+      ]
+    },
+    {
+      "activityCode": "55-02(06)",
+      "activityName": "अस्थाई चेक डेम (पिरुल आदि चेक डेम)",
+      "activityEnglishName": "Temporary Check Dam (Pirul etc.)",
+      "unit": "No.",
+      "hasPhysical": true,
+      "hasSize": false,
+      "isHeader": false,
+      "districts": [
+        {
+          "districtName": "Almora",
+          "physicalProgressTillLastFY": 18,
+          "targetUnit": 55,
+          "targetSizeCubicMeter": 0,
+          "sarraExpendTillLastFY": 1.2,
+          "ratePerUnit": 0.045,
+          "targetDeptShareLakh": 1.5,
+          "targetSarraShareLakh": 2,
+          "lastMonthPhysicalProgress": 4,
+          "thisMonthPhysicalProgress": 6,
+          "lastMonthSarraExpend": 0.18,
+          "thisMonthSarraExpend": 0.27
+        }
+      ]
+    },
+    {
+      "activityCode": "55-02(07)",
+      "activityName": "Loose Boulder Check Dam",
+      "activityEnglishName": "Loose Boulder Check Dam",
+      "unit": "No.",
+      "hasPhysical": true,
+      "hasSize": false,
+      "isHeader": false,
+      "districts": [
+        {
+          "districtName": "Almora",
+          "physicalProgressTillLastFY": 12,
+          "targetUnit": 40,
+          "targetSizeCubicMeter": 0,
+          "sarraExpendTillLastFY": 3.6,
+          "ratePerUnit": 0.22,
+          "targetDeptShareLakh": 4,
+          "targetSarraShareLakh": 5,
+          "lastMonthPhysicalProgress": 3,
+          "thisMonthPhysicalProgress": 4,
+          "lastMonthSarraExpend": 0.66,
+          "thisMonthSarraExpend": 0.88
+        }
+      ]
+    },
+    {
+      "activityCode": "55-02(08)",
+      "activityName": "R:R Dry Check Dam",
+      "activityEnglishName": "RR Dry Check Dam",
+      "unit": "No.",
+      "hasPhysical": true,
+      "hasSize": false,
+      "isHeader": false,
+      "districts": [
+        {
+          "districtName": "Almora",
+          "physicalProgressTillLastFY": 6,
+          "targetUnit": 20,
+          "targetSizeCubicMeter": 0,
+          "sarraExpendTillLastFY": 4.8,
+          "ratePerUnit": 0.55,
+          "targetDeptShareLakh": 5,
+          "targetSarraShareLakh": 6.5,
+          "lastMonthPhysicalProgress": 1,
+          "thisMonthPhysicalProgress": 2,
+          "lastMonthSarraExpend": 0.55,
+          "thisMonthSarraExpend": 1.1
+        }
+      ]
+    },
+    {
+      "activityCode": "55-02(09)",
+      "activityName": "Gabion / Crate Wire Check Dam",
+      "activityEnglishName": "Gabion/Crate Wire Check Dam",
+      "unit": "No.",
+      "hasPhysical": true,
+      "hasSize": false,
+      "isHeader": false,
+      "districts": [
+        {
+          "districtName": "Almora",
+          "physicalProgressTillLastFY": 4,
+          "targetUnit": 15,
+          "targetSizeCubicMeter": 0,
+          "sarraExpendTillLastFY": 7.2,
+          "ratePerUnit": 1.1,
+          "targetDeptShareLakh": 8,
+          "targetSarraShareLakh": 9,
+          "lastMonthPhysicalProgress": 1,
+          "thisMonthPhysicalProgress": 1,
+          "lastMonthSarraExpend": 1.1,
+          "thisMonthSarraExpend": 1.1
+        }
+      ]
+    },
+    {
+      "activityCode": "55-02(10)",
+      "activityName": "Cemented Check Dam",
+      "activityEnglishName": "Cemented Check Dam",
+      "unit": "No.",
+      "hasPhysical": true,
+      "hasSize": false,
+      "isHeader": false,
+      "districts": [
+        {
+          "districtName": "Almora",
+          "physicalProgressTillLastFY": 2,
+          "targetUnit": 8,
+          "targetSizeCubicMeter": 0,
+          "sarraExpendTillLastFY": 9.5,
+          "ratePerUnit": 2.4,
+          "targetDeptShareLakh": 10,
+          "targetSarraShareLakh": 12,
+          "lastMonthPhysicalProgress": 0,
+          "thisMonthPhysicalProgress": 1,
+          "lastMonthSarraExpend": 0,
+          "thisMonthSarraExpend": 2.4
+        }
+      ]
+    },
+    {
+      "activityCode": "55-02(11)",
+      "activityName": "वानस्पतिक उपचार गतिविधि",
+      "activityEnglishName": "Vegetative Treatment",
+      "unit": "Ha.",
+      "hasPhysical": true,
+      "hasSize": false,
+      "isHeader": false,
+      "districts": [
+        {
+          "districtName": "Almora",
+          "physicalProgressTillLastFY": 15.5,
+          "targetUnit": 42,
+          "targetSizeCubicMeter": 0,
+          "sarraExpendTillLastFY": 2.1,
+          "ratePerUnit": 0.12,
+          "targetDeptShareLakh": 3,
+          "targetSarraShareLakh": 3.5,
+          "lastMonthPhysicalProgress": 3.2,
+          "thisMonthPhysicalProgress": 4.5,
+          "lastMonthSarraExpend": 0.38,
+          "thisMonthSarraExpend": 0.54
+        }
+      ]
+    },
+    {
+      "activityCode": "55-02(12)",
+      "activityName": "वनीकरण गतिविधि",
+      "activityEnglishName": "Forestry Plantation",
+      "unit": "Ha.",
+      "hasPhysical": true,
+      "hasSize": false,
+      "isHeader": false,
+      "districts": [
+        {
+          "districtName": "Almora",
+          "physicalProgressTillLastFY": 28,
+          "targetUnit": 75,
+          "targetSizeCubicMeter": 0,
+          "sarraExpendTillLastFY": 11.2,
+          "ratePerUnit": 0.28,
+          "targetDeptShareLakh": 14,
+          "targetSarraShareLakh": 16,
+          "lastMonthPhysicalProgress": 6,
+          "thisMonthPhysicalProgress": 8,
+          "lastMonthSarraExpend": 1.68,
+          "thisMonthSarraExpend": 2.24
+        }
+      ]
+    },
+    {
+      "activityCode": "55-02(13)",
+      "activityName": "चारा / घास रोपण",
+      "activityEnglishName": "Fodder/Grass Plantation",
+      "unit": "Ha.",
+      "hasPhysical": true,
+      "hasSize": false,
+      "isHeader": false,
+      "districts": [
+        {
+          "districtName": "Almora",
+          "physicalProgressTillLastFY": 12,
+          "targetUnit": 35,
+          "targetSizeCubicMeter": 0,
+          "sarraExpendTillLastFY": 1.8,
+          "ratePerUnit": 0.09,
+          "targetDeptShareLakh": 2.2,
+          "targetSarraShareLakh": 2.8,
+          "lastMonthPhysicalProgress": 2.5,
+          "thisMonthPhysicalProgress": 3.5,
+          "lastMonthSarraExpend": 0.22,
+          "thisMonthSarraExpend": 0.315
+        }
+      ]
+    },
+    {
+      "activityCode": "55-02(14)",
+      "activityName": "प्राकृतिक पुनरोत्पादन गतिविधि",
+      "activityEnglishName": "ANR Activities",
+      "unit": "Ha.",
+      "hasPhysical": true,
+      "hasSize": false,
+      "isHeader": false,
+      "districts": [
+        {
+          "districtName": "Almora",
+          "physicalProgressTillLastFY": 40,
+          "targetUnit": 100,
+          "targetSizeCubicMeter": 0,
+          "sarraExpendTillLastFY": 3.5,
+          "ratePerUnit": 0.07,
+          "targetDeptShareLakh": 4,
+          "targetSarraShareLakh": 5,
+          "lastMonthPhysicalProgress": 8,
+          "thisMonthPhysicalProgress": 10,
+          "lastMonthSarraExpend": 0.56,
+          "thisMonthSarraExpend": 0.7
+        }
+      ]
+    },
+    {
+      "activityCode": "55-02(15)",
+      "activityName": "वृक्षारोपण गतिविधि",
+      "activityEnglishName": "Plantation Activities",
+      "unit": "Ha.",
+      "hasPhysical": true,
+      "hasSize": false,
+      "isHeader": false,
+      "districts": [
+        {
+          "districtName": "Almora",
+          "physicalProgressTillLastFY": 20,
+          "targetUnit": 55,
+          "targetSizeCubicMeter": 0,
+          "sarraExpendTillLastFY": 6.8,
+          "ratePerUnit": 0.2,
+          "targetDeptShareLakh": 7,
+          "targetSarraShareLakh": 8.5,
+          "lastMonthPhysicalProgress": 4,
+          "thisMonthPhysicalProgress": 5,
+          "lastMonthSarraExpend": 0.8,
+          "thisMonthSarraExpend": 1
+        }
+      ]
+    },
+    {
+      "activityCode": "55-02(16)",
+      "activityName": "उपरोक्त गतिविधियों से कुल उपचारित जल संग्रहण क्षेत्र",
+      "activityEnglishName": "Total Catchment Area Treated",
+      "unit": "Ha.",
+      "hasPhysical": true,
+      "hasSize": false,
+      "isHeader": false,
+      "districts": [
+        {
+          "districtName": "Almora",
+          "physicalProgressTillLastFY": 185,
+          "targetUnit": 420,
+          "targetSizeCubicMeter": 0,
+          "sarraExpendTillLastFY": 0,
+          "ratePerUnit": 0,
+          "targetDeptShareLakh": 0,
+          "targetSarraShareLakh": 0,
+          "lastMonthPhysicalProgress": 35,
+          "thisMonthPhysicalProgress": 42,
+          "lastMonthSarraExpend": 0,
+          "thisMonthSarraExpend": 0
+        }
+      ]
+    },
+    {
+      "activityCode": "M&E",
+      "activityName": "मूल्यांकन एवं अनुश्रवण / मूल्यांकन एवं अनुश्रवण पर व्यय",
+      "activityEnglishName": "Monitoring & Evaluation",
+      "unit": "",
+      "hasPhysical": false,
+      "hasSize": false,
+      "isHeader": false,
+      "districts": [
+        {
+          "districtName": "Almora",
+          "physicalProgressTillLastFY": 0,
+          "targetUnit": 0,
+          "targetSizeCubicMeter": 0,
+          "sarraExpendTillLastFY": 1.5,
+          "ratePerUnit": 0,
+          "targetDeptShareLakh": 0.8,
+          "targetSarraShareLakh": 1.5,
+          "lastMonthPhysicalProgress": 0,
+          "thisMonthPhysicalProgress": 0,
+          "lastMonthSarraExpend": 0.25,
+          "thisMonthSarraExpend": 0.3
+        }
+      ]
+    }
+  ]
+}

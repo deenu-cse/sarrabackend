@@ -13,12 +13,13 @@ export const globalErrorHandler = (err, req, res, next) => {
       message: err.message,
       errorCode: err.errorCode || 'ERROR',
       errors: err.errors || [],
+      data: err.data || null,
       stack: err.stack,
     });
   } else {
     let error = { ...err };
     error.message = err.message;
-    
+
     if (err.name === 'CastError') {
       const message = `Resource not found with id of ${err.value}`;
       error.statusCode = HTTP_STATUS.BAD_REQUEST;
@@ -56,8 +57,9 @@ export const globalErrorHandler = (err, req, res, next) => {
     res.status(error.statusCode || err.statusCode).json({
       success: false,
       message: error.message || 'Server Error',
-      errorCode: error.errorCode || 'INTERNAL_ERROR',
+      errorCode: error.errorCode || err.errorCode || 'INTERNAL_ERROR',
       errors: error.errors || [],
+      data: err.data || null,
     });
   }
 };

@@ -32,9 +32,9 @@ router.get('/summary', requireRole('MND_OFFICER', 'MND_SUPER_ADMIN'), getSummary
 router.get('/district-summary', requireRole('MND_OFFICER', 'MND_SUPER_ADMIN'), getDistrictSummary);
 router.get('/analytics/full', requireRole('MND_SUPER_ADMIN', 'MND_OFFICER'), getFullAnalytics);
 
-router.get('/:id', requireRole('MND_OFFICER', 'MND_SUPER_ADMIN'), getSingleForm);
+router.get('/:id', requireRole('MND_OFFICER', 'MND_SUPER_ADMIN', 'SUPER_ADMIN'), getSingleForm);
 
-router.patch('/:id/approve', requireRole('MND_SUPER_ADMIN'), approveFormController);
-router.patch('/:id/reject', requireRole('MND_SUPER_ADMIN'), rejectFormController);
+router.patch('/:id/approve', requireRole('MND_SUPER_ADMIN', 'SUPER_ADMIN'), approveFormController);
+router.patch('/:id/reject', requireRole('MND_SUPER_ADMIN', 'SUPER_ADMIN'), rejectFormController);
 
 export default router;

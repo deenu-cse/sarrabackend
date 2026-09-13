@@ -59,15 +59,20 @@ class MPRPraroop1BService {
   }
 
   async saveDraft(userId, userDistrict, userDept, formData, ip, ua) {
-    const { financialYear, reportingMonth, activities, totalApprovedSchemes, totalRiversUnderSchemes, riversCurrentlyBeingTreated } = formData;
+    const { projectSanctionId, sanctionId, financialYear, reportingMonth, activities, totalApprovedSchemes, totalRiversUnderSchemes, riversCurrentlyBeingTreated } = formData;
     
-    let mpr = await MPRPraroop1B.findOne({
+    let query = {
       submittedBy: userId,
       financialYear,
       reportingMonth,
       headCode: '55-02',
       isDraft: true
-    });
+    };
+    if (projectSanctionId) {
+      query = { projectSanctionId, isDraft: true };
+    }
+
+    let mpr = await MPRPraroop1B.findOne(query);
 
     if (mpr) {
       mpr.activities = activities;
@@ -76,8 +81,12 @@ class MPRPraroop1BService {
       mpr.riversCurrentlyBeingTreated = riversCurrentlyBeingTreated;
       mpr.ipAddress = ip;
       mpr.userAgent = ua;
+      if (projectSanctionId) mpr.projectSanctionId = projectSanctionId;
+      if (sanctionId) mpr.sanctionId = sanctionId;
     } else {
       mpr = new MPRPraroop1B({
+        projectSanctionId,
+        sanctionId,
         financialYear,
         reportingMonth,
         headCode: '55-02',
@@ -99,7 +108,7 @@ class MPRPraroop1BService {
   }
 
   async submitMPR(userId, userDistrict, userDept, formData, ip, ua) {
-    const { financialYear, reportingMonth, activities, totalApprovedSchemes, totalRiversUnderSchemes, riversCurrentlyBeingTreated } = formData;
+    const { projectSanctionId, sanctionId, financialYear, reportingMonth, activities, totalApprovedSchemes, totalRiversUnderSchemes, riversCurrentlyBeingTreated } = formData;
     
     const districtCode = userDistrict ? userDistrict.substring(0, 3).toUpperCase() : 'HQ';
     const prefix = `SARRA-MPR1B-${new Date().getFullYear()}-${districtCode}-`;
@@ -111,13 +120,18 @@ class MPRPraroop1BService {
     }
     const applicationNo = `${prefix}${nextNumber.toString().padStart(4, '0')}`;
 
-    let mpr = await MPRPraroop1B.findOne({
+    let query = {
       submittedBy: userId,
       financialYear,
       reportingMonth,
       headCode: '55-02',
       isDraft: true
-    });
+    };
+    if (projectSanctionId) {
+      query = { projectSanctionId, isDraft: true };
+    }
+
+    let mpr = await MPRPraroop1B.findOne(query);
 
     if (mpr) {
       mpr.applicationNo = applicationNo;
@@ -130,8 +144,12 @@ class MPRPraroop1BService {
       mpr.riversCurrentlyBeingTreated = riversCurrentlyBeingTreated;
       mpr.ipAddress = ip;
       mpr.userAgent = ua;
+      if (projectSanctionId) mpr.projectSanctionId = projectSanctionId;
+      if (sanctionId) mpr.sanctionId = sanctionId;
     } else {
       mpr = new MPRPraroop1B({
+        projectSanctionId,
+        sanctionId,
         applicationNo,
         financialYear,
         reportingMonth,
@@ -167,14 +185,14 @@ class MPRPraroop1BService {
     let mpr = await MPRPraroop1B.findOne({
       _id: mprId,
       submittedBy: userId,
-      status: 'REJECTED'
+      status: { $in: ['REJECTED', 'RETURNED_TO_PIA'] }
     });
 
     if (!mpr) {
       throw new ApiError(HTTP_STATUS.NOT_FOUND, 'Rejected MPR not found or unauthorized');
     }
 
-    mpr.status = 'RESUBMITTED';
+    mpr.status = 'SUBMITTED';
     mpr.submittedAt = new Date();
     mpr.activities = activities;
     mpr.totalApprovedSchemes = totalApprovedSchemes;
@@ -184,9 +202,9 @@ class MPRPraroop1BService {
     mpr.userAgent = ua;
     
     mpr.revisionHistory.push({
-      status: 'RESUBMITTED',
+      status: 'SUBMITTED',
       changedBy: userId,
-      note: 'Resubmitted by MND Officer'
+      note: 'Resubmitted by PIA Officer'
     });
 
     await mpr.save();
@@ -219,6 +237,7 @@ class MPRPraroop1BService {
     const mpr = await MPRPraroop1B.findById(mprId)
       .populate('submittedBy', 'name email mobile role')
       .populate('reviewedBy', 'name email role')
+      .populate('districtApprovedBy', 'name email role')
       .populate('revisionHistory.changedBy', 'name role');
 
     if (!mpr) {

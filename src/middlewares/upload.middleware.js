@@ -62,7 +62,7 @@ const multerUploadFields = upload.fields([
   { name: 'signatureWithStamp', maxCount: 1 },
 ]);
 
-export const uploadFields = (req, res, next) => {
+export const uploadDPRFields = (req, res, next) => {
   multerUploadFields(req, res, (err) => {
     if (err instanceof multer.MulterError) {
       if (err.code === 'LIMIT_FILE_SIZE') {
@@ -87,6 +87,26 @@ export const uploadFields = (req, res, next) => {
     }
     next();
   });
+};
+
+// Keep backward-compatible alias
+export const uploadFields = (fieldsOrReq, res, next) => {
+  // If called as factory: uploadFields([{ name: 'x', maxCount: 1 }])
+  if (Array.isArray(fieldsOrReq)) {
+    const dynamicUpload = upload.fields(fieldsOrReq);
+    return (req, res, next) => {
+      dynamicUpload(req, res, (err) => {
+        if (err instanceof multer.MulterError) {
+          return next(new ApiError(HTTP_STATUS.BAD_REQUEST, err.message));
+        } else if (err) {
+          return next(err);
+        }
+        next();
+      });
+    };
+  }
+  // If called as middleware directly (backward compat): uploadFields(req, res, next)
+  return uploadDPRFields(fieldsOrReq, res, next);
 };
 
 export const parseFormDataJson = (req, res, next) => {

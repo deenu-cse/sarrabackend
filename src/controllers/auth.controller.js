@@ -1,4 +1,15 @@
-import { registerUser, loginUser, refreshTokenService, logoutUser, changeUserPassword } from '../services/auth.service.js';
+import {
+  registerUser,
+  loginUser,
+  refreshTokenService,
+  logoutUser,
+  changeUserPassword,
+  forgotPassword,
+  verifyResetOtp,
+  resetPasswordWithOtp,
+  verifyInviteOtp,
+  acceptInvite
+} from '../services/auth.service.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import ApiResponse from '../utils/ApiResponse.js';
 import { HTTP_STATUS } from '../constants/http.constants.js';
@@ -90,4 +101,34 @@ export const changePassword = asyncHandler(async (req, res) => {
   res.clearCookie('refreshToken');
 
   res.status(HTTP_STATUS.OK).json(new ApiResponse(HTTP_STATUS.OK, null, 'Password changed successfully. Please log in again.'));
+});
+
+export const forgotPasswordHandler = asyncHandler(async (req, res) => {
+  const { email } = req.body;
+  const result = await forgotPassword(email);
+  res.status(HTTP_STATUS.OK).json(new ApiResponse(HTTP_STATUS.OK, null, result.message));
+});
+
+export const verifyResetOtpHandler = asyncHandler(async (req, res) => {
+  const { email, otp } = req.body;
+  const result = await verifyResetOtp(email, otp);
+  res.status(HTTP_STATUS.OK).json(new ApiResponse(HTTP_STATUS.OK, { email: result.email }, result.message));
+});
+
+export const resetPasswordHandler = asyncHandler(async (req, res) => {
+  const { email, otp, newPassword } = req.body;
+  const result = await resetPasswordWithOtp(email, otp, newPassword);
+  res.status(HTTP_STATUS.OK).json(new ApiResponse(HTTP_STATUS.OK, null, result.message));
+});
+
+export const verifyInviteOtpHandler = asyncHandler(async (req, res) => {
+  const { email, otp } = req.body;
+  const result = await verifyInviteOtp(email, otp);
+  res.status(HTTP_STATUS.OK).json(new ApiResponse(HTTP_STATUS.OK, { email: result.email, name: result.name }, result.message));
+});
+
+export const acceptInviteHandler = asyncHandler(async (req, res) => {
+  const { email, otp, password } = req.body;
+  const result = await acceptInvite(email, otp, password);
+  res.status(HTTP_STATUS.OK).json(new ApiResponse(HTTP_STATUS.OK, null, result.message));
 });

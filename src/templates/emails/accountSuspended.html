@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Account Suspended — SARRA CRM</title>
+</head>
+<body style="margin:0;padding:0;background:#f1f5f9;font-family:'Segoe UI',Tahoma,Geneva,Verdana,sans-serif;">
+  <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f1f5f9;padding:40px 16px;">
+    <tr>
+      <td align="center">
+        <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="max-width:560px;background:#ffffff;border-radius:16px;overflow:hidden;border:1px solid #e2e8f0;box-shadow:0 10px 30px rgba(15,23,42,0.08);">
+          <tr>
+            <td style="background:linear-gradient(135deg,#b45309 0%,#c2410c 100%);padding:34px 32px;text-align:center;">
+              <p style="margin:0;color:#ffedd5;font-size:11px;letter-spacing:2.5px;text-transform:uppercase;font-weight:600;">Account Access Notice</p>
+              <h1 style="margin:10px 0 0;color:#ffffff;font-size:26px;letter-spacing:0.5px;">Account Suspended</h1>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:32px;">
+              <p style="margin:0 0 10px;color:#0f172a;font-size:17px;font-weight:700;">Hello {{name}},</p>
+              <p style="margin:0 0 22px;color:#475569;font-size:15px;line-height:1.65;">
+                Your SARRA CRM Portal access has been <strong style="color:#c2410c;">temporarily suspended</strong>
+                by {{adminName}}. You will not be able to sign in until the suspension period ends or an administrator restores your access.
+              </p>
+
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#fff7ed;border:1px solid #fed7aa;border-radius:12px;margin-bottom:20px;">
+                <tr>
+                  <td style="padding:18px 20px;">
+                    <p style="margin:0 0 6px;color:#9a3412;font-size:11px;text-transform:uppercase;letter-spacing:1px;font-weight:700;">Suspended until</p>
+                    <p style="margin:0;color:#7c2d12;font-size:18px;font-weight:700;">{{suspendedUntil}}</p>
+                    <p style="margin:8px 0 0;color:#9a3412;font-size:13px;">Duration: {{durationLabel}}</p>
+                  </td>
+                </tr>
+              </table>
+
+              <table role="presentation" width="100%" cellspacing="0" cellpadding="0" style="background:#f8fafc;border:1px solid #e2e8f0;border-radius:12px;margin-bottom:8px;">
+                <tr>
+                  <td style="padding:18px 20px;">
+                    <p style="margin:0 0 6px;color:#64748b;font-size:11px;text-transform:uppercase;letter-spacing:1px;font-weight:700;">Reason</p>
+                    <p style="margin:0;color:#0f172a;font-size:14px;line-height:1.55;">{{reason}}</p>
+                  </td>
+                </tr>
+              </table>
+            </td>
+          </tr>
+          <tr>
+            <td style="padding:0 32px 28px;">
+              <p style="margin:0;color:#94a3b8;font-size:12px;line-height:1.55;">
+                If you believe this was done in error, please contact your Super Admin or
+                <a href="mailto:support@sarra.uk.gov.in" style="color:#123a66;">support@sarra.uk.gov.in</a>.
+              </p>
+            </td>
+          </tr>
+          <tr>
+            <td style="background:#f8fafc;padding:16px 32px;border-top:1px solid #e2e8f0;text-align:center;">
+              <p style="margin:0;color:#94a3b8;font-size:12px;">© {{year}} SARRA · Government of Uttarakhand</p>
+            </td>
+          </tr>
+        </table>
+      </td>
+    </tr>
+  </table>
+</body>
+</html>

@@ -6,7 +6,7 @@ const auditLogSchema = new mongoose.Schema({
     required: true,
     enum: [
       'LOGIN', 'LOGOUT', 'FORM_SUBMIT', 'FORM_APPROVE', 'FORM_REJECT',
-      'FORM_DRAFT_SAVE', 'USER_CREATE', 'USER_DEACTIVATE',
+      'FORM_DRAFT_SAVE', 'USER_CREATE', 'USER_DEACTIVATE', 'USER_SUSPEND', 'USER_RESTORE',
       'PASSWORD_CHANGE', 'TOKEN_REFRESH', 'BOOTSTRAP'
     ]
   },

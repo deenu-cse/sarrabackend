@@ -6,4 +6,11 @@ const USER_ROLES = {
   MND_SUPER_ADMIN: 'MND_SUPER_ADMIN'
 };
 
+const WORKFLOW_ROLES = {
+  MAKER: 'MAKER',
+  CHECKER: 'CHECKER',
+  APPROVER: 'APPROVER'
+};
+
+export { WORKFLOW_ROLES };
 export default USER_ROLES;

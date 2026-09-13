@@ -2,12 +2,15 @@ import { Router } from 'express';
 import { verifyAccessToken } from '../middlewares/auth.middleware.js';
 import { requireRole } from '../middlewares/role.middleware.js';
 import USER_ROLES from '../constants/roles.constants.js';
-import { uploadLimiter } from '../middlewares/rateLimiter.middleware.js'; // reusing limiter for exports
+import { uploadLimiter } from '../middlewares/rateLimiter.middleware.js';
 import * as reportController from '../controllers/report.controller.js';
+import * as homeDashboardController from '../controllers/homeDashboard.controller.js';
 
 const router = Router();
 
 router.use(verifyAccessToken);
+
+router.get('/home', homeDashboardController.getHome);
 
 router.get('/overview', reportController.getOverviewStats);
 router.get('/district-stats', reportController.getDistrictStats);

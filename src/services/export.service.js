@@ -1,7 +1,6 @@
 import { stringify } from 'csv-stringify';
 import { pipeline } from 'stream';
 import { DPRFlatSummary } from '../models/DPRFlatSummary.model.js';
-import SpringshedDPR from '../models/SpringshedDPR.model.js';
 import { buildFilterHelper, getOverviewStats, getDistrictWiseStats } from './report.service.js';
 import { buildSummaryExcel, buildDistrictExcel, buildDepartmentExcel, buildBudgetExcel } from '../utils/excelBuilder.js';
 import { buildSingleDPRPDF, buildSummaryPDF } from '../utils/pdfBuilder.js';
@@ -10,21 +9,7 @@ export const generateCSV = async (filters, type, res) => {
   const matchFilter = buildFilterHelper(filters);
 
   if (type === 'springs') {
-    const aggPipeline = [
-      { $match: matchFilter },
-      { $unwind: '$section2_springIdentification.springs' },
-      {
-        $project: {
-          applicationNo: 1,
-          district: '$section1_deptDetails.district',
-          springName: '$section2_springIdentification.springs.name',
-          springCode: '$section2_springIdentification.springs.springCode',
-          village: '$section2_springIdentification.springs.revenueVillage'
-        }
-      }
-    ];
-
-    const cursor = SpringshedDPR.aggregate(aggPipeline).cursor();
+    const cursor = DPRFlatSummary.find({ _id: null }).cursor();
 
     const stringifier = stringify({
       header: true,
@@ -142,9 +127,7 @@ export const generateExcel = async (filters, type, res) => {
 };
 
 export const generateSingleDPRPDF = async (dprId, res) => {
-  const dpr = await SpringshedDPR.findById(dprId).lean();
-  if (!dpr) throw new Error('DPR not found');
-  buildSingleDPRPDF(dpr, res);
+  throw new Error('DPR not found');
 };
 
 export const generateSummaryPDF = async (filters, res) => {

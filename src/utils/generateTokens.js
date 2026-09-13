@@ -6,6 +6,7 @@ export const generateTokens = async (user, ip, userAgent) => {
   const payload = {
     id: user._id,
     role: user.role,
+    workflowRole: user.workflowRole,
     district: user.district,
     department: user.department,
   };

@@ -29,13 +29,28 @@ export const verifyAccessToken = asyncHandler(async (req, res, next) => {
       throw new ApiError(HTTP_STATUS.UNAUTHORIZED, 'User recently changed password! Please log in again.');
     }
 
-    if (!user.isActive) {
-      throw new ApiError(HTTP_STATUS.FORBIDDEN, 'User account is deactivated.');
+    const access = await user.resolveAccountAccess();
+
+    if (access.status === 'DEACTIVATED') {
+      throw new ApiError(HTTP_STATUS.FORBIDDEN, 'Your account has been deactivated.', {
+        code: 'ACCOUNT_DEACTIVATED',
+        ...user.getRestrictionPayload()
+      });
+    }
+
+    if (access.status === 'SUSPENDED') {
+      throw new ApiError(HTTP_STATUS.FORBIDDEN, 'Your account is temporarily suspended.', {
+        code: 'ACCOUNT_SUSPENDED',
+        ...user.getRestrictionPayload()
+      });
     }
 
     req.user = user;
     next();
   } catch (error) {
+    if (error instanceof ApiError) {
+      throw error;
+    }
     if (error.name === 'TokenExpiredError') {
       throw new ApiError(HTTP_STATUS.UNAUTHORIZED, 'Token expired. Please refresh your token.');
     }

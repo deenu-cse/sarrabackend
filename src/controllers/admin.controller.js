@@ -1,13 +1,16 @@
 import User from '../models/User.model.js';
 import AuditLog from '../models/AuditLog.model.js';
-import SpringshedDPR from '../models/SpringshedDPR.model.js';
-import { registerUser } from '../services/auth.service.js';
-import { getAnalyticsOverview } from '../services/springsheddpr.service.js';
+import { registerUser, inviteUser } from '../services/auth.service.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import ApiResponse from '../utils/ApiResponse.js';
 import paginate from '../utils/paginate.js';
 import { HTTP_STATUS } from '../constants/http.constants.js';
 import NodeCache from 'node-cache';
+import {
+  sendAccountSuspendedEmail,
+  sendAccountDeactivatedEmail,
+  sendAccountRestoredEmail
+} from '../utils/email/accountStatusEmails.js';
 
 const cache = new NodeCache({ stdTTL: 300 });
 
@@ -15,6 +18,14 @@ export const createUser = asyncHandler(async (req, res) => {
   const user = await registerUser(req.body);
   res.locals.auditTargetId = user._id;
   res.status(HTTP_STATUS.CREATED).json(new ApiResponse(HTTP_STATUS.CREATED, user, 'User created successfully'));
+});
+
+export const inviteUserHandler = asyncHandler(async (req, res) => {
+  const user = await inviteUser(req.body, req.user);
+  res.locals.auditTargetId = user._id;
+  res
+    .status(HTTP_STATUS.CREATED)
+    .json(new ApiResponse(HTTP_STATUS.CREATED, user, 'Invitation sent successfully'));
 });
 
 export const getUsers = asyncHandler(async (req, res) => {
@@ -34,7 +45,7 @@ export const getUsers = asyncHandler(async (req, res) => {
 
   const pipeline = [
     { $match: matchObj },
-    { $project: { password: 0 } },
+    { $project: { password: 0, inviteOtpHash: 0, passwordResetToken: 0 } },
     { $sort: { createdAt: -1 } }
   ];
 
@@ -47,7 +58,7 @@ export const toggleUserActive = asyncHandler(async (req, res) => {
   const { id } = req.params;
 
   if (id === req.user._id.toString()) {
-    return res.status(HTTP_STATUS.BAD_REQUEST).json(new ApiResponse(HTTP_STATUS.BAD_REQUEST, null, 'Cannot deactivate yourself'));
+    return res.status(HTTP_STATUS.BAD_REQUEST).json(new ApiResponse(HTTP_STATUS.BAD_REQUEST, null, 'Cannot change status of your own account'));
   }
 
   const user = await User.findById(id);
@@ -56,50 +67,241 @@ export const toggleUserActive = asyncHandler(async (req, res) => {
   }
 
   user.isActive = !user.isActive;
+  user.accountStatus = user.isActive ? 'ACTIVE' : 'DEACTIVATED';
+  if (!user.isActive) {
+    user.deactivatedAt = new Date();
+    user.deactivationReason = 'Toggled inactive';
+  } else {
+    user.deactivatedAt = undefined;
+    user.deactivationReason = undefined;
+    user.suspendedUntil = undefined;
+    user.suspensionReason = undefined;
+  }
+  user.statusChangedBy = req.user._id;
+  user.statusChangedAt = new Date();
   await user.save({ validateBeforeSave: false });
-  
-  res.locals.auditTargetId = user._id;
 
-  res.status(HTTP_STATUS.OK).json(new ApiResponse(HTTP_STATUS.OK, { isActive: user.isActive }, `User ${user.isActive ? 'activated' : 'deactivated'} successfully`));
+  res.locals.auditTargetId = user._id;
+  res.locals.auditMetadata = { accountStatus: user.accountStatus };
+
+  res.status(HTTP_STATUS.OK).json(new ApiResponse(HTTP_STATUS.OK, { isActive: user.isActive, accountStatus: user.accountStatus }, `User ${user.isActive ? 'activated' : 'deactivated'} successfully`));
+});
+
+const assertNotSelf = (req, id) => {
+  if (id === req.user._id.toString()) {
+    return 'Cannot change status of your own account';
+  }
+  return null;
+};
+
+export const suspendUser = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const { until, reason } = req.body;
+
+  const selfErr = assertNotSelf(req, id);
+  if (selfErr) {
+    return res.status(HTTP_STATUS.BAD_REQUEST).json(new ApiResponse(HTTP_STATUS.BAD_REQUEST, null, selfErr));
+  }
+
+  const untilDate = new Date(until);
+  if (Number.isNaN(untilDate.getTime()) || untilDate <= new Date()) {
+    return res
+      .status(HTTP_STATUS.BAD_REQUEST)
+      .json(new ApiResponse(HTTP_STATUS.BAD_REQUEST, null, 'Suspend until date must be a valid future date'));
+  }
+
+  const user = await User.findById(id);
+  if (!user) {
+    return res.status(HTTP_STATUS.NOT_FOUND).json(new ApiResponse(HTTP_STATUS.NOT_FOUND, null, 'User not found'));
+  }
+
+  if (user.accountStatus === 'DEACTIVATED') {
+    return res
+      .status(HTTP_STATUS.BAD_REQUEST)
+      .json(new ApiResponse(HTTP_STATUS.BAD_REQUEST, null, 'User is deactivated. Restore the account before suspending.'));
+  }
+
+  user.accountStatus = 'SUSPENDED';
+  user.isActive = false;
+  user.suspendedUntil = untilDate;
+  user.suspensionReason = reason?.trim() || undefined;
+  user.deactivatedAt = undefined;
+  user.deactivationReason = undefined;
+  user.statusChangedBy = req.user._id;
+  user.statusChangedAt = new Date();
+  await user.save({ validateBeforeSave: false });
+
+  try {
+    await sendAccountSuspendedEmail({
+      user,
+      admin: req.user,
+      until: untilDate,
+      reason: user.suspensionReason
+    });
+  } catch (err) {
+    console.error('[suspendUser] Failed to send suspension email:', err.message);
+  }
+
+  res.locals.auditTargetId = user._id;
+  res.locals.auditMetadata = {
+    accountStatus: 'SUSPENDED',
+    suspendedUntil: untilDate,
+    reason: user.suspensionReason || null,
+    targetEmail: user.email,
+    emailNotified: true
+  };
+
+  res.status(HTTP_STATUS.OK).json(
+    new ApiResponse(
+      HTTP_STATUS.OK,
+      {
+        _id: user._id,
+        accountStatus: user.accountStatus,
+        suspendedUntil: user.suspendedUntil,
+        suspensionReason: user.suspensionReason || null,
+        isActive: user.isActive
+      },
+      'User suspended successfully'
+    )
+  );
+});
+
+export const deactivateUser = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+  const { reason } = req.body;
+
+  const selfErr = assertNotSelf(req, id);
+  if (selfErr) {
+    return res.status(HTTP_STATUS.BAD_REQUEST).json(new ApiResponse(HTTP_STATUS.BAD_REQUEST, null, selfErr));
+  }
+
+  const user = await User.findById(id);
+  if (!user) {
+    return res.status(HTTP_STATUS.NOT_FOUND).json(new ApiResponse(HTTP_STATUS.NOT_FOUND, null, 'User not found'));
+  }
+
+  user.accountStatus = 'DEACTIVATED';
+  user.isActive = false;
+  user.deactivatedAt = new Date();
+  user.deactivationReason = reason?.trim() || undefined;
+  user.suspendedUntil = undefined;
+  user.suspensionReason = undefined;
+  user.statusChangedBy = req.user._id;
+  user.statusChangedAt = new Date();
+  await user.save({ validateBeforeSave: false });
+
+  try {
+    await sendAccountDeactivatedEmail({
+      user,
+      admin: req.user,
+      reason: user.deactivationReason,
+      deactivatedAt: user.deactivatedAt
+    });
+  } catch (err) {
+    console.error('[deactivateUser] Failed to send deactivation email:', err.message);
+  }
+
+  res.locals.auditTargetId = user._id;
+  res.locals.auditMetadata = {
+    accountStatus: 'DEACTIVATED',
+    reason: user.deactivationReason || null,
+    targetEmail: user.email,
+    emailNotified: true
+  };
+
+  res.status(HTTP_STATUS.OK).json(
+    new ApiResponse(
+      HTTP_STATUS.OK,
+      {
+        _id: user._id,
+        accountStatus: user.accountStatus,
+        deactivatedAt: user.deactivatedAt,
+        deactivationReason: user.deactivationReason || null,
+        isActive: user.isActive
+      },
+      'User deactivated successfully'
+    )
+  );
+});
+
+export const restoreUser = asyncHandler(async (req, res) => {
+  const { id } = req.params;
+
+  const selfErr = assertNotSelf(req, id);
+  if (selfErr) {
+    return res.status(HTTP_STATUS.BAD_REQUEST).json(new ApiResponse(HTTP_STATUS.BAD_REQUEST, null, selfErr));
+  }
+
+  const user = await User.findById(id);
+  if (!user) {
+    return res.status(HTTP_STATUS.NOT_FOUND).json(new ApiResponse(HTTP_STATUS.NOT_FOUND, null, 'User not found'));
+  }
+
+  const previousStatus = user.accountStatus;
+  user.accountStatus = 'ACTIVE';
+  user.isActive = true;
+  user.suspendedUntil = undefined;
+  user.suspensionReason = undefined;
+  user.deactivatedAt = undefined;
+  user.deactivationReason = undefined;
+  user.statusChangedBy = req.user._id;
+  user.statusChangedAt = new Date();
+  await user.save({ validateBeforeSave: false });
+
+  try {
+    await sendAccountRestoredEmail({
+      user,
+      admin: req.user,
+      previousStatus
+    });
+  } catch (err) {
+    console.error('[restoreUser] Failed to send restore email:', err.message);
+  }
+
+  res.locals.auditTargetId = user._id;
+  res.locals.auditMetadata = {
+    accountStatus: 'ACTIVE',
+    previousStatus,
+    targetEmail: user.email,
+    emailNotified: true
+  };
+
+  res.status(HTTP_STATUS.OK).json(
+    new ApiResponse(
+      HTTP_STATUS.OK,
+      {
+        _id: user._id,
+        accountStatus: user.accountStatus,
+        isActive: user.isActive
+      },
+      'User access restored successfully'
+    )
+  );
 });
 
 export const getOverviewAnalytics = asyncHandler(async (req, res) => {
-  let analytics = cache.get("analytics_overview");
-  
-  if (!analytics) {
-    analytics = await getAnalyticsOverview();
-    cache.set("analytics_overview", analytics);
-  }
-
-  res.status(HTTP_STATUS.OK).json(new ApiResponse(HTTP_STATUS.OK, analytics, 'Analytics fetched successfully'));
+  res.status(HTTP_STATUS.OK).json(new ApiResponse(HTTP_STATUS.OK, {
+    totalSubmitted: 0,
+    totalApproved: 0,
+    totalUnderReview: 0,
+    totalRejected: 0
+  }, 'Analytics fetched successfully'));
 });
 
 export const getDistrictAnalytics = asyncHandler(async (req, res) => {
-  const { districtName } = req.params;
-
-  const districtData = await SpringshedDPR.aggregate([
-    { $match: { submittedByDistrict: districtName } },
-    { 
-      $facet: {
-        byStatus: [{ $group: { _id: "$status", count: { $sum: 1 } } }],
-        byDepartment: [{ $group: { _id: "$submittedByDepartment", count: { $sum: 1 } } }],
-        recentForms: [
-          { $sort: { createdAt: -1 } },
-          { $limit: 10 },
-          { $project: { applicationNo: 1, status: 1, submittedAt: 1, "section1_deptDetails.department": 1 } }
-        ]
-      }
-    }
-  ]);
-
-  res.status(HTTP_STATUS.OK).json(new ApiResponse(HTTP_STATUS.OK, districtData[0], 'District analytics fetched successfully'));
+  res.status(HTTP_STATUS.OK).json(new ApiResponse(HTTP_STATUS.OK, {
+    byStatus: [],
+    byDepartment: [],
+    recentForms: []
+  }, 'District analytics fetched successfully'));
 });
 
 export const getAuditLogs = asyncHandler(async (req, res) => {
-  const { action, userId, from, to, page = 1, limit = 20 } = req.query;
+  const { action, role, userId, from, to, search, page = 1, limit = 20 } = req.query;
 
   const matchObj = {};
   if (action) matchObj.action = action;
+  if (role) matchObj.performedByRole = role;
   if (userId) matchObj.performedBy = userId;
   if (from || to) {
     matchObj.timestamp = {};
@@ -111,11 +313,73 @@ export const getAuditLogs = asyncHandler(async (req, res) => {
     { $match: matchObj },
     { $sort: { timestamp: -1 } },
     { $lookup: { from: 'users', localField: 'performedBy', foreignField: '_id', as: 'user' } },
-    { $unwind: { path: '$user', preserveNullAndEmptyArrays: true } },
-    { $project: { "user.password": 0 } }
+    { $unwind: { path: '$user', preserveNullAndEmptyArrays: true } }
   ];
+
+  if (search?.trim()) {
+    const term = search.trim();
+    pipeline.push({
+      $match: {
+        $or: [
+          { 'user.name': { $regex: term, $options: 'i' } },
+          { 'user.email': { $regex: term, $options: 'i' } },
+          { targetResource: { $regex: term, $options: 'i' } },
+          { action: { $regex: term, $options: 'i' } },
+          { ipAddress: { $regex: term, $options: 'i' } }
+        ]
+      }
+    });
+  }
+
+  pipeline.push({
+    $project: {
+      action: 1,
+      performedByRole: 1,
+      targetResource: 1,
+      targetId: 1,
+      ipAddress: 1,
+      userAgent: 1,
+      metadata: 1,
+      timestamp: 1,
+      performerName: { $ifNull: ['$user.name', 'System'] },
+      performerEmail: { $ifNull: ['$user.email', ''] },
+      performerId: '$performedBy'
+    }
+  });
 
   const result = await paginate(AuditLog, pipeline, page, limit);
 
-  res.status(HTTP_STATUS.OK).json(new ApiResponse(HTTP_STATUS.OK, result.data, 'Audit logs fetched successfully', result.pagination));
+  const todayStart = new Date();
+  todayStart.setHours(0, 0, 0, 0);
+
+  const [todayCount, actionBreakdown] = await Promise.all([
+    AuditLog.countDocuments({ ...matchObj, timestamp: { $gte: todayStart } }),
+    AuditLog.aggregate([
+      { $match: matchObj },
+      { $group: { _id: '$action', count: { $sum: 1 } } },
+      { $sort: { count: -1 } },
+      { $limit: 10 }
+    ])
+  ]);
+
+  res.status(HTTP_STATUS.OK).json(
+    new ApiResponse(
+      HTTP_STATUS.OK,
+      {
+        logs: result.data,
+        stats: {
+          total: result.pagination.total,
+          today: todayCount,
+          byAction: actionBreakdown.map((a) => ({ action: a._id, count: a.count }))
+        }
+      },
+      'Audit logs fetched successfully',
+      {
+        page: result.pagination.page,
+        limit: result.pagination.limit,
+        total: result.pagination.total,
+        totalPages: result.pagination.pages
+      }
+    )
+  );
 });

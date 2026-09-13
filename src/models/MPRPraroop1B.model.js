@@ -6,6 +6,13 @@ const MPRPraroop1BSchema = new mongoose.Schema({
     unique: true,
     sparse: true
   },
+  projectSanctionId: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'ProjectSanction'
+  },
+  sanctionId: {
+    type: String
+  },
   reportType: {
     type: String,
     default: 'PRAROOP_1B'
@@ -25,7 +32,7 @@ const MPRPraroop1BSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['DRAFT', 'SUBMITTED', 'APPROVED', 'REJECTED', 'RESUBMITTED'],
+    enum: ['DRAFT', 'SUBMITTED', 'DISTRICT_MAKER_REVIEW', 'DISTRICT_CHECKER_REVIEW', 'DISTRICT_APPROVED', 'FORWARDED_TO_STATE', 'STATE_VERIFIED', 'RETURNED_TO_PIA', 'REJECTED', 'APPROVED'],
     default: 'DRAFT'
   },
   submittedBy: {
@@ -47,6 +54,12 @@ const MPRPraroop1BSchema = new mongoose.Schema({
   reviewedAt: Date,
   approvedAt: Date,
   rejectionReason: String,
+  districtApprovedBy: {
+    type: mongoose.Schema.Types.ObjectId,
+    ref: 'User'
+  },
+  districtApprovedAt: Date,
+  returnReason: String,
   revisionHistory: [{
     status: String,
     changedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
