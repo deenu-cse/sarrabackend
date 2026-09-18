@@ -9,7 +9,8 @@ import {
   restoreUser,
   getOverviewAnalytics,
   getDistrictAnalytics,
-  getAuditLogs
+  getAuditLogs,
+  getBusinessAuditLogs
 } from '../controllers/admin.controller.js';
 import { verifyAccessToken } from '../middlewares/auth.middleware.js';
 import { requireRole, requirePureSuperAdmin } from '../middlewares/role.middleware.js';
@@ -39,5 +40,6 @@ router.get('/analytics/overview', requireRole('SUPER_ADMIN'), getOverviewAnalyti
 router.get('/analytics/district/:districtName', requireRole('SUPER_ADMIN'), getDistrictAnalytics);
 
 router.get('/audit-logs', requireRole('SUPER_ADMIN'), getAuditLogs);
+router.get('/business-audit', requireRole('SUPER_ADMIN'), getBusinessAuditLogs);
 
 export default router;

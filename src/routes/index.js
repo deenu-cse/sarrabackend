@@ -9,6 +9,7 @@ import mprPraroop1BRoutes from './mprPraroop1B.routes.js';
 import mprPraroop1CRoutes from './mprPraroop1C.routes.js';
 import mprPraroop1DRoutes from './mprPraroop1D.routes.js';
 import sanctionRoutes from './sanction.routes.js';
+import notificationRoutes from './notification.routes.js';
 import { apiLimiter } from '../middlewares/rateLimiter.middleware.js';
 import ApiResponse from '../utils/ApiResponse.js';
 import { HTTP_STATUS } from '../constants/http.constants.js';
@@ -32,5 +33,6 @@ router.use('/mpr/praroop1b', mprPraroop1BRoutes);
 router.use('/mpr/praroop1c', mprPraroop1CRoutes);
 router.use('/mpr/praroop1d', mprPraroop1DRoutes);
 router.use('/sanctions', sanctionRoutes);
+router.use('/notifications', notificationRoutes);
 
 export default router;

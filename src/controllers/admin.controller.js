@@ -11,6 +11,7 @@ import {
   sendAccountDeactivatedEmail,
   sendAccountRestoredEmail
 } from '../utils/email/accountStatusEmails.js';
+import { getBusinessAudit } from '../services/businessActivity.service.js';
 
 const cache = new NodeCache({ stdTTL: 300 });
 
@@ -382,4 +383,16 @@ export const getAuditLogs = asyncHandler(async (req, res) => {
       }
     )
   );
+});
+
+export const getBusinessAuditLogs = asyncHandler(async (req, res) => {
+  const data = await getBusinessAudit({
+    projectId: req.query.projectId,
+    search: req.query.search,
+    limit: req.query.limit
+  });
+
+  res
+    .status(HTTP_STATUS.OK)
+    .json(new ApiResponse(HTTP_STATUS.OK, data, 'Business audit timeline fetched successfully'));
 });

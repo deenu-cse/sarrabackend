@@ -1,11 +1,10 @@
 import * as sanctionService from '../services/sanction.service.js';
 import { uploadFile } from '../services/upload.service.js';
-import { createNotification } from '../services/notification.service.js';
-import User from '../models/User.model.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import ApiResponse from '../utils/ApiResponse.js';
 import ApiError from '../utils/ApiError.js';
 import { HTTP_STATUS } from '../constants/http.constants.js';
+import { notifyProjectWorkflow } from '../services/workflowNotification.service.js';
 
 /** POST / — Create sanction from approved DPR (State Maker) */
 export const createSanction = asyncHandler(async (req, res) => {
@@ -13,6 +12,7 @@ export const createSanction = asyncHandler(async (req, res) => {
     throw new ApiError(HTTP_STATUS.FORBIDDEN, 'Only Makers can create sanctions');
   }
   const sanction = await sanctionService.createSanction(req.body, req.user);
+  await notifyProjectWorkflow({ project: sanction, actor: req.user, event: 'PROJECT_SUBMITTED' });
   res.status(HTTP_STATUS.CREATED).json(new ApiResponse(HTTP_STATUS.CREATED, sanction, 'Sanction created and sent to Checker'));
 });
 
@@ -78,6 +78,7 @@ export const checkerVerify = asyncHandler(async (req, res) => {
   }
   const sanction = await sanctionService.checkerVerify(req.params.id, req.user, req.body.note);
   if (!sanction) throw new ApiError(HTTP_STATUS.NOT_FOUND, 'Sanction not found');
+  await notifyProjectWorkflow({ project: sanction, actor: req.user, event: 'PROJECT_CHECKED' });
   res.status(HTTP_STATUS.OK).json(new ApiResponse(HTTP_STATUS.OK, sanction, 'Sanction verified by Checker'));
 });
 
@@ -99,6 +100,7 @@ export const approveSanction = asyncHandler(async (req, res) => {
 
   const sanction = await sanctionService.approverApprove(req.params.id, req.user, req.body.note, documents);
   if (!sanction) throw new ApiError(HTTP_STATUS.NOT_FOUND, 'Sanction not found');
+  await notifyProjectWorkflow({ project: sanction, actor: req.user, event: 'PROJECT_APPROVED' });
   res.status(HTTP_STATUS.OK).json(new ApiResponse(HTTP_STATUS.OK, sanction, `Sanction approved. ID: ${sanction.sanctionId}`));
 });
 
@@ -107,6 +109,7 @@ export const rejectSanction = asyncHandler(async (req, res) => {
   if (!req.body.reason) throw new ApiError(HTTP_STATUS.BAD_REQUEST, 'Rejection reason is required');
   const sanction = await sanctionService.rejectSanction(req.params.id, req.user, req.body.reason);
   if (!sanction) throw new ApiError(HTTP_STATUS.NOT_FOUND, 'Sanction not found');
+  await notifyProjectWorkflow({ project: sanction, actor: req.user, event: 'PROJECT_REJECTED', note: req.body.reason });
   res.status(HTTP_STATUS.OK).json(new ApiResponse(HTTP_STATUS.OK, null, 'Sanction rejected'));
 });
 
@@ -114,12 +117,7 @@ export const rejectSanction = asyncHandler(async (req, res) => {
 export const forwardToDistrict = asyncHandler(async (req, res) => {
   const sanction = await sanctionService.forwardToDistrict(req.params.id, req.user);
   if (!sanction) throw new ApiError(HTTP_STATUS.NOT_FOUND, 'Sanction not found');
-
-  // Notify DD officers in that district
-  const ddUsers = await User.find({ role: 'DD_LEVEL', district: sanction.district, isActive: true });
-  for (const dd of ddUsers) {
-    await createNotification(dd._id, 'New Sanction Received', `Sanction ${sanction.sanctionId} forwarded to your district.`, 'ProjectSanction', sanction._id);
-  }
+  await notifyProjectWorkflow({ project: sanction, actor: req.user, event: 'PROJECT_FORWARDED_DISTRICT' });
 
   res.status(HTTP_STATUS.OK).json(new ApiResponse(HTTP_STATUS.OK, sanction, 'Sanction forwarded to district'));
 });
@@ -132,6 +130,7 @@ export const districtAcceptSanction = asyncHandler(async (req, res) => {
   }
   const sanction = await sanctionService.districtAccept(req.params.id, req.user, fundAllocationOrder, req.body.allocatedAmountLakh);
   if (!sanction) throw new ApiError(HTTP_STATUS.NOT_FOUND, 'Sanction not found');
+  await notifyProjectWorkflow({ project: sanction, actor: req.user, event: 'PROJECT_DISTRICT_ACCEPTED' });
   res.status(HTTP_STATUS.OK).json(new ApiResponse(HTTP_STATUS.OK, sanction, 'Sanction accepted by district'));
 });
 
@@ -140,8 +139,7 @@ export const forwardToPIA = asyncHandler(async (req, res) => {
   if (!req.body.piaUserId) throw new ApiError(HTTP_STATUS.BAD_REQUEST, 'PIA user ID is required');
   const sanction = await sanctionService.forwardToPIA(req.params.id, req.user, req.body.piaUserId);
   if (!sanction) throw new ApiError(HTTP_STATUS.NOT_FOUND, 'Sanction not found');
-
-  await createNotification(req.body.piaUserId, 'New Project Assigned', `Sanction ${sanction.sanctionId} has been assigned to you. Please accept to activate the project.`, 'ProjectSanction', sanction._id);
+  await notifyProjectWorkflow({ project: sanction, actor: req.user, event: 'PROJECT_FORWARDED_PIA' });
 
   res.status(HTTP_STATUS.OK).json(new ApiResponse(HTTP_STATUS.OK, sanction, 'Sanction forwarded to PIA'));
 });
