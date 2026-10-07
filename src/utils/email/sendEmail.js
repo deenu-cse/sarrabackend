@@ -63,7 +63,8 @@ export const sendEmail = async ({
   html,
   text,
   from,
-  fromName
+  fromName,
+  attachments
 } = {}) => {
   if (!to) throw new Error('sendEmail: "to" is required');
   if (!subject) throw new Error('sendEmail: "subject" is required');
@@ -91,6 +92,7 @@ export const sendEmail = async ({
     console.log(`From:    ${fromAddress}`);
     console.log(`Subject: ${subject}`);
     if (data?.otp) console.log(`OTP:     ${data.otp}`);
+    if (attachments?.length) console.log(`Attach:  ${attachments.map((file) => `${file.filename} (${file.content?.length || 0} bytes)`).join(', ')}`);
     console.log('Template/HTML rendered (preview truncated):');
     console.log(htmlBody.slice(0, 400).replace(/\s+/g, ' ') + '...');
     console.log('=====================================\n');
@@ -104,7 +106,8 @@ export const sendEmail = async ({
       to: recipients,
       subject,
       html: htmlBody,
-      ...(text && { text })
+      ...(text && { text }),
+      ...(attachments?.length && { attachments })
     });
 
     if (error) {

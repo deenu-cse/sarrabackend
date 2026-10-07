@@ -298,10 +298,12 @@ export const getDistrictAnalytics = asyncHandler(async (req, res) => {
 });
 
 export const getAuditLogs = asyncHandler(async (req, res) => {
-  const { action, role, userId, from, to, search, page = 1, limit = 20 } = req.query;
+  const { action, actions, role, userId, from, to, search, page = 1, limit = 20 } = req.query;
 
   const matchObj = {};
-  if (action) matchObj.action = action;
+  const actionList = typeof actions === 'string' ? actions.split(',').map((item) => item.trim()).filter(Boolean).slice(0, 40) : [];
+  if (typeof action === 'string' && action) matchObj.action = action;
+  else if (actionList.length) matchObj.action = { $in: actionList };
   if (role) matchObj.performedByRole = role;
   if (userId) matchObj.performedBy = userId;
   if (from || to) {

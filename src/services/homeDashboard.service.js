@@ -304,16 +304,19 @@ async function piaHome(user) {
     returnedMprs
   ] = await Promise.all([
     ProjectSanction.find({
-      status: SANCTION_STATUS.FORWARDED_TO_PIA,
-      forwardedToPIA: userId
+      $or: [
+        { status: SANCTION_STATUS.FORWARDED_TO_PIA, forwardedToPIA: userId },
+        { departmentAllocations: { $elemMatch: { piaUserId: userId, piaAcceptedAt: null } } }
+      ]
     })
       .sort({ updatedAt: -1 })
       .limit(8)
       .lean(),
     ProjectSanction.find({
-      status: SANCTION_STATUS.PIA_ACCEPTED,
-      forwardedToPIA: userId,
-      isActive: true
+      $or: [
+        { status: SANCTION_STATUS.PIA_ACCEPTED, forwardedToPIA: userId, isActive: true },
+        { departmentAllocations: { $elemMatch: { piaUserId: userId, piaAcceptedAt: { $ne: null } } } }
+      ]
     })
       .sort({ updatedAt: -1 })
       .limit(8)

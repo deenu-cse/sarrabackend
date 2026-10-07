@@ -31,13 +31,13 @@ const mprPathForRole = (role, formKey, mprId) => {
   return `/dashboard/officer/mprs/${formKey}/${mprId}`;
 };
 
-const activeUserQuery = { isActive: true, accountStatus: { $ne: 'DEACTIVATED' } };
+export const activeUserQuery = { isActive: true, accountStatus: { $ne: 'DEACTIVATED' } };
 
 const compactRole = (user) => user?.workflowRole || user?.role || 'System';
-const referenceForProject = (project) => project?.sanctionId || project?.dprApplicationNo || 'Sanction ID pending';
+const referenceForProject = (project) => project?.sanctionId || project?.projectId || project?.dprApplicationNo || 'Sanction ID pending';
 const referenceForMpr = (mpr) => mpr?.applicationNo || 'MPR reference pending';
 
-const safeNotify = async (recipients, payload) => {
+export const safeNotify = async (recipients, payload) => {
   const users = (Array.isArray(recipients) ? recipients : [recipients]).filter(Boolean);
   const frontendUrl = getFrontendUrl();
 
@@ -85,7 +85,7 @@ const safeNotify = async (recipients, payload) => {
   }));
 };
 
-export const notifyProjectWorkflow = async ({ project, actor, event, note }) => {
+export const notifyProjectWorkflow = async ({ project, actor, event, note, recipientIds }) => {
   if (!project) return;
   const eventDate = new Date();
   const projectId = project._id;
@@ -196,7 +196,10 @@ export const notifyProjectWorkflow = async ({ project, actor, event, note }) => 
   }
 
   if (event === 'PROJECT_FORWARDED_PIA') {
-    const pia = await User.findById(project.forwardedToPIA);
+    // Department-wise projects name the officers just assigned; older projects have a single PIA.
+    const pia = Array.isArray(recipientIds) && recipientIds.length
+      ? await User.find({ ...activeUserQuery, _id: { $in: recipientIds } })
+      : await User.findById(project.forwardedToPIA);
     return safeNotify(pia, {
       title: `${referenceNo} assigned for PIA acceptance`,
       message: `${projectTitle} has been assigned to you. Please accept the project to activate MPR submission.`,
@@ -329,3 +332,86 @@ export const notifyMprWorkflow = async ({ mpr, actor, event, formKey, formLabel 
 
 export const getProjectForNotification = async (projectId) =>
   ProjectSanction.findById(projectId);
+
+/**
+ * Notifications for project Monthly Progress Reports (ProjectMPR).
+ * SUBMITTED / RESUBMITTED go to the District Directors of the project's
+ * district; APPROVED / RETURNED go back to the PIA officer who filed it.
+ */
+export const notifyProjectMpr = async ({ mpr, actor, event }) => {
+  if (!mpr) return;
+  const period = `${mpr.reportingMonth} ${mpr.financialYear}`;
+  const common = {
+    referenceNo: mpr.mprNo,
+    projectTitle: mpr.projectTitle || mpr.projectCode,
+    actorName: actor?.name || 'SARRA CRM',
+    actorRole: compactRole(actor),
+    status: mpr.status,
+    eventDate: new Date(),
+    relatedResource: 'ProjectMPR',
+    relatedId: mpr._id,
+  };
+
+  if (event === 'SUBMITTED' || event === 'RESUBMITTED') {
+    const directors = await User.find({ ...activeUserQuery, role: USER_ROLES.DD_LEVEL, district: mpr.district });
+    return safeNotify(directors, {
+      ...common,
+      title: `${mpr.mprNo} ${event === 'RESUBMITTED' ? 'resubmitted' : 'submitted'} for review`,
+      message: `${mpr.departmentName} progress report for ${period} (${mpr.projectCode}) was ${event === 'RESUBMITTED' ? 'corrected and resubmitted' : 'submitted'} by ${common.actorName}.`,
+      emailDescription: 'A monthly progress report has been submitted and is awaiting your review. Please open the report, review the progress, and approve it or return it for correction.',
+      subject: 'Action Required: SARRA MPR Awaiting Review',
+      priority: 'HIGH',
+      primaryLabel: 'Review MPR',
+      link: `/dashboard/dd/mpr-review/project/${mpr._id}`,
+    });
+  }
+
+  if (event === 'VERIFIED') {
+    const submitter = await User.findById(mpr.submittedBy);
+    return safeNotify(submitter, {
+      ...common,
+      title: `${mpr.mprNo} verified by State`,
+      message: `Your ${period} progress report for ${mpr.departmentName} was verified by ${common.actorName}.`,
+      emailDescription: 'Your monthly progress report has been verified at State level.',
+      subject: `MPR Verified by State: ${mpr.mprNo}`,
+      priority: 'NORMAL',
+      primaryLabel: 'Open MPR',
+      link: `/dashboard/officer/mprs/report/${mpr._id}`,
+    });
+  }
+
+  if (event === 'APPROVED') {
+    // District approval also puts the report in the M&E admin's queue for State verification.
+    const admins = await User.find({ ...activeUserQuery, role: USER_ROLES.MND_SUPER_ADMIN });
+    await safeNotify(admins, {
+      ...common,
+      title: `${mpr.mprNo} ready for State verification`,
+      message: `${mpr.departmentName} progress report for ${period} (${mpr.projectCode}) was approved by ${mpr.district} district.`,
+      emailDescription: 'A monthly progress report has been approved at district level and is ready for State verification.',
+      subject: 'MPR Ready for State Verification',
+      priority: 'NORMAL',
+      primaryLabel: 'Verify MPR',
+      link: `/dashboard/mnd-admin/mpr/project/${mpr._id}`,
+    });
+  }
+
+  if (event === 'APPROVED' || event === 'RETURNED') {
+    const returned = event === 'RETURNED';
+    const submitter = await User.findById(mpr.submittedBy);
+    return safeNotify(submitter, {
+      ...common,
+      title: returned ? `${mpr.mprNo} returned for correction` : `${mpr.mprNo} approved by district`,
+      message: returned
+        ? `Your ${period} progress report for ${mpr.departmentName} was returned by ${common.actorName}: ${mpr.returnReason || 'please review the remarks'}.`
+        : `Your ${period} progress report for ${mpr.departmentName} was approved by ${common.actorName}.`,
+      emailDescription: returned
+        ? 'Your monthly progress report has been returned for correction. Please open the report, read the remarks, correct the figures and resubmit.'
+        : 'Your monthly progress report has been approved at district level.',
+      subject: returned ? `MPR Returned for Correction: ${mpr.mprNo}` : `MPR Approved: ${mpr.mprNo}`,
+      priority: returned ? 'HIGH' : 'NORMAL',
+      primaryLabel: 'Open MPR',
+      link: `/dashboard/officer/mprs/report/${mpr._id}`,
+    });
+  }
+  return undefined;
+};
