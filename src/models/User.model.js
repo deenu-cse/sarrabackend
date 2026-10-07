@@ -2,7 +2,6 @@ import mongoose from 'mongoose';
 import bcrypt from 'bcryptjs';
 import USER_ROLES, { WORKFLOW_ROLES } from '../constants/roles.constants.js';
 import { DISTRICTS } from '../constants/districts.constants.js';
-import { DEPARTMENTS } from '../constants/departments.constants.js';
 
 const userSchema = new mongoose.Schema(
   {
@@ -44,7 +43,6 @@ const userSchema = new mongoose.Schema(
     },
     department: {
       type: String,
-      enum: [...DEPARTMENTS, null],
       required: function () {
         return this.role === USER_ROLES.PIA_OFFICER;
       },

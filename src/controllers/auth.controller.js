@@ -34,6 +34,8 @@ export const login = asyncHandler(async (req, res) => {
   const userAgent = req.headers['user-agent'];
 
   const { user, accessToken, refreshToken } = await loginUser(email, password, ip, userAgent);
+  // The audit entry for a sign-in is written before any token exists, so tell it who signed in.
+  res.locals.auditUser = { id: user?._id || user?.id, role: user?.role };
 
   res.cookie('accessToken', accessToken, { ...cookieOptions, maxAge: 15 * 60 * 1000 });
   res.cookie('refreshToken', refreshToken, cookieOptions);

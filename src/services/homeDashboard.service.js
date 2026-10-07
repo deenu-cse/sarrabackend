@@ -1,6 +1,5 @@
 import User from '../models/User.model.js';
 import ProjectSanction from '../models/ProjectSanction.model.js';
-import AuditLog from '../models/AuditLog.model.js';
 import MPRPraroop1A from '../models/MPRPraroop1A.model.js';
 import MPRPraroop1B from '../models/MPRPraroop1B.model.js';
 import MPRPraroop1C from '../models/MPRPraroop1C.model.js';
@@ -8,6 +7,7 @@ import MPRPraroop1D from '../models/MPRPraroop1D.model.js';
 import MPRAbstract55 from '../models/MPRAbstract55.model.js';
 import USER_ROLES from '../constants/roles.constants.js';
 import { SANCTION_STATUS, MPR_STATUS } from '../constants/status.constants.js';
+import { getRecentBusinessActivity } from './businessActivity.service.js';
 
 const MPR_MODELS = [
   { model: MPRPraroop1A, type: 'Praroop-1(A)', key: 'praroop1a', hrefBase: 'praroop1a' },
@@ -88,7 +88,7 @@ async function superAdminHome(user) {
     sanctionByStatus,
     mprTotals,
     invitePending,
-    recentAudit,
+    recentBusinessActivity,
     pendingChecker,
     pendingApprover,
     pendingForwardDistrict,
@@ -109,11 +109,7 @@ async function superAdminHome(user) {
     countByStatus(ProjectSanction),
     mprStatusTotals({}),
     User.countDocuments({ invitePending: true }),
-    AuditLog.find({})
-      .sort({ timestamp: -1 })
-      .limit(8)
-      .populate('performedBy', 'name email role')
-      .lean(),
+    getRecentBusinessActivity(8),
     ProjectSanction.find({ status: SANCTION_STATUS.PENDING_CHECKER })
       .sort({ updatedAt: -1 })
       .limit(8)
@@ -187,14 +183,7 @@ async function superAdminHome(user) {
     welcomeHint,
     stats,
     actionRequired,
-    recentActivity: (recentAudit || []).map((a) => ({
-      id: a._id,
-      action: a.action,
-      role: a.performedByRole,
-      name: a.performedBy?.name || 'System',
-      resource: a.targetResource,
-      timestamp: a.timestamp
-    })),
+    recentActivity: recentBusinessActivity || [],
     recentItems: recentSanctions.map((s) =>
       mapSanctionAction(s, `/dashboard/admin/projects/${s._id}`)
     ),
@@ -315,16 +304,19 @@ async function piaHome(user) {
     returnedMprs
   ] = await Promise.all([
     ProjectSanction.find({
-      status: SANCTION_STATUS.FORWARDED_TO_PIA,
-      forwardedToPIA: userId
+      $or: [
+        { status: SANCTION_STATUS.FORWARDED_TO_PIA, forwardedToPIA: userId },
+        { departmentAllocations: { $elemMatch: { piaUserId: userId, piaAcceptedAt: null } } }
+      ]
     })
       .sort({ updatedAt: -1 })
       .limit(8)
       .lean(),
     ProjectSanction.find({
-      status: SANCTION_STATUS.PIA_ACCEPTED,
-      forwardedToPIA: userId,
-      isActive: true
+      $or: [
+        { status: SANCTION_STATUS.PIA_ACCEPTED, forwardedToPIA: userId, isActive: true },
+        { departmentAllocations: { $elemMatch: { piaUserId: userId, piaAcceptedAt: { $ne: null } } } }
+      ]
     })
       .sort({ updatedAt: -1 })
       .limit(8)

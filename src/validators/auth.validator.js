@@ -1,7 +1,6 @@
 import Joi from 'joi';
 import USER_ROLES from '../constants/roles.constants.js';
 import { DISTRICTS } from '../constants/districts.constants.js';
-import { DEPARTMENTS } from '../constants/departments.constants.js';
 
 export const registerSchema = Joi.object({
   name: Joi.string().trim().required(),
@@ -13,7 +12,7 @@ export const registerSchema = Joi.object({
     then: Joi.required(),
     otherwise: Joi.optional().allow(null, '')
   }),
-  department: Joi.string().valid(...DEPARTMENTS).when('role', {
+  department: Joi.string().trim().max(80).when('role', {
     is: USER_ROLES.PIA_OFFICER,
     then: Joi.required(),
     otherwise: Joi.optional().allow(null, '')
@@ -57,7 +56,7 @@ export const inviteUserSchema = Joi.object({
     then: Joi.required(),
     otherwise: Joi.optional().allow(null, '')
   }),
-  department: Joi.string().valid(...DEPARTMENTS).when('role', {
+  department: Joi.string().trim().max(80).when('role', {
     is: USER_ROLES.PIA_OFFICER,
     then: Joi.required(),
     otherwise: Joi.optional().allow(null, '')

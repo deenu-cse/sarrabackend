@@ -4,6 +4,7 @@ import mprPraroop1BService from '../services/mprPraroop1B.service.js';
 import MPRPraroop1B from '../models/MPRPraroop1B.model.js';
 import { HTTP_STATUS } from '../constants/http.constants.js';
 import ApiError from '../utils/ApiError.js';
+import { notifyMprWorkflow } from '../services/workflowNotification.service.js';
 
 export const saveDraft = asyncHandler(async (req, res) => {
   const userId = req.user._id;
@@ -26,6 +27,7 @@ export const submitMPR = asyncHandler(async (req, res) => {
   const ua = req.get('User-Agent');
 
   const mpr = await mprPraroop1BService.submitMPR(userId, userDistrict, userDept, formData, ip, ua);
+  await notifyMprWorkflow({ mpr, actor: req.user, event: 'MPR_SUBMITTED', formKey: 'praroop1b', formLabel: 'Praroop-1(B)' });
   res.status(HTTP_STATUS.CREATED).json(new ApiResponse(HTTP_STATUS.CREATED, mpr, 'MPR submitted successfully'));
 });
 
@@ -37,6 +39,7 @@ export const resubmitMPR = asyncHandler(async (req, res) => {
   const ua = req.get('User-Agent');
 
   const mpr = await mprPraroop1BService.resubmitMPR(id, userId, formData, ip, ua);
+  await notifyMprWorkflow({ mpr, actor: req.user, event: 'MPR_RESUBMITTED', formKey: 'praroop1b', formLabel: 'Praroop-1(B)' });
   res.status(HTTP_STATUS.OK).json(new ApiResponse(HTTP_STATUS.OK, mpr, 'MPR resubmitted successfully'));
 });
 
@@ -67,6 +70,7 @@ export const approveReport = asyncHandler(async (req, res) => {
   const { id } = req.params;
   const { note } = req.body;
   const mpr = await mprPraroop1BService.approveMPR(id, req.user._id, note);
+  await notifyMprWorkflow({ mpr, actor: req.user, event: 'MPR_APPROVED', formKey: 'praroop1b', formLabel: 'Praroop-1(B)' });
   res.status(HTTP_STATUS.OK).json(new ApiResponse(HTTP_STATUS.OK, mpr, 'Report approved'));
 });
 
@@ -74,6 +78,7 @@ export const rejectReport = asyncHandler(async (req, res) => {
   const { id } = req.params;
   const { note } = req.body;
   const mpr = await mprPraroop1BService.rejectMPR(id, req.user._id, note);
+  await notifyMprWorkflow({ mpr, actor: req.user, event: 'MPR_REJECTED', formKey: 'praroop1b', formLabel: 'Praroop-1(B)' });
   res.status(HTTP_STATUS.OK).json(new ApiResponse(HTTP_STATUS.OK, mpr, 'Report rejected'));
 });
 
@@ -131,6 +136,7 @@ export const districtApprove = asyncHandler(async (req, res) => {
     note: req.body.note || 'Approved by District Officer (DD)'
   });
   await mpr.save();
+  await notifyMprWorkflow({ mpr, actor: req.user, event: 'MPR_DISTRICT_APPROVED', formKey: 'praroop1b', formLabel: 'Praroop-1(B)' });
   res.status(HTTP_STATUS.OK).json(new ApiResponse(HTTP_STATUS.OK, mpr, 'MPR approved by district'));
 });
 
@@ -152,6 +158,7 @@ export const returnToMaker = asyncHandler(async (req, res) => {
     note: req.body.reason || 'Returned for correction'
   });
   await mpr.save();
+  await notifyMprWorkflow({ mpr, actor: req.user, event: 'MPR_RETURNED', formKey: 'praroop1b', formLabel: 'Praroop-1(B)' });
   res.status(HTTP_STATUS.OK).json(new ApiResponse(HTTP_STATUS.OK, mpr, 'MPR returned to PIA'));
 });
 

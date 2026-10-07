@@ -1,5 +1,8 @@
 import mongoose from 'mongoose';
 import logger from './logger.js';
+import { seedMasterData } from '../services/masterData.service.js';
+import { seedOutcomeIndicators } from '../services/projectOutcome.service.js';
+import { startScheduler } from '../services/monitoring.service.js';
 
 const connectDB = async () => {
   const MAX_RETRIES = 3;
@@ -20,6 +23,11 @@ const connectDB = async () => {
       mongoose.connection.on('disconnected', () => {
         logger.warn('MongoDB disconnected');
       });
+
+      // First-run seed of master data (no-op once the collections have data)
+      await seedMasterData();
+      await seedOutcomeIndicators();
+      startScheduler();
 
       return conn;
     } catch (error) {

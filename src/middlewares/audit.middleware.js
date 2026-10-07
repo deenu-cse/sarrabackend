@@ -17,8 +17,8 @@ export const auditLog = (action, targetResourceFunc = () => null) => {
 
           await AuditLog.create({
             action,
-            performedBy: req.user ? req.user._id : null,
-            performedByRole: req.user ? req.user.role : null,
+            performedBy: req.user ? req.user._id : (res.locals?.auditUser?.id || null),
+            performedByRole: req.user ? req.user.role : (res.locals?.auditUser?.role || null),
             targetResource,
             targetId,
             ipAddress: req.ip || req.connection.remoteAddress,

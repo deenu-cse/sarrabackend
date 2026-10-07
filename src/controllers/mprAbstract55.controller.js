@@ -11,6 +11,7 @@ import asyncHandler from '../utils/asyncHandler.js';
 import ApiResponse from '../utils/ApiResponse.js';
 import ApiError from '../utils/ApiError.js';
 import { HTTP_STATUS } from '../constants/http.constants.js';
+import { notifyMprWorkflow } from '../services/workflowNotification.service.js';
 
 export const saveFormDraft = asyncHandler(async (req, res) => {
   const ip = req.ip || req.connection.remoteAddress;
@@ -26,6 +27,7 @@ export const submitForm = asyncHandler(async (req, res) => {
   const userAgent = req.headers['user-agent'];
   
   const form = await submitMPR(req.user._id, req.user.district, req.user.department, req.body, ip, userAgent);
+  await notifyMprWorkflow({ mpr: form, actor: req.user, event: 'MPR_SUBMITTED', formKey: 'abstract55', formLabel: 'Abstract 55' });
   
   res.status(HTTP_STATUS.OK).json(new ApiResponse(HTTP_STATUS.OK, { applicationNo: form.applicationNo, status: form.status }, 'Form submitted successfully'));
 });
@@ -36,6 +38,7 @@ export const resubmitForm = asyncHandler(async (req, res) => {
   const userAgent = req.headers['user-agent'];
   
   const form = await resubmitMPR(id, req.user._id, req.body, ip, userAgent);
+  await notifyMprWorkflow({ mpr: form, actor: req.user, event: 'MPR_RESUBMITTED', formKey: 'abstract55', formLabel: 'Abstract 55' });
   
   res.status(HTTP_STATUS.OK).json(new ApiResponse(HTTP_STATUS.OK, { applicationNo: form.applicationNo, status: form.status }, 'Form resubmitted successfully'));
 });
@@ -61,6 +64,7 @@ export const approveFormController = asyncHandler(async (req, res) => {
   const form = await approveMPR(req.params.id, req.user._id);
 
   if (!form) throw new ApiError(HTTP_STATUS.NOT_FOUND, 'Form not found');
+  await notifyMprWorkflow({ mpr: form, actor: req.user, event: 'MPR_APPROVED', formKey: 'abstract55', formLabel: 'Abstract 55' });
 
   res.status(HTTP_STATUS.OK).json(new ApiResponse(HTTP_STATUS.OK, null, 'Form approved successfully'));
 });
@@ -74,6 +78,7 @@ export const rejectFormController = asyncHandler(async (req, res) => {
   const form = await rejectMPR(req.params.id, req.user._id, rejectionReason);
 
   if (!form) throw new ApiError(HTTP_STATUS.NOT_FOUND, 'Form not found');
+  await notifyMprWorkflow({ mpr: form, actor: req.user, event: 'MPR_REJECTED', formKey: 'abstract55', formLabel: 'Abstract 55' });
 
   res.status(HTTP_STATUS.OK).json(new ApiResponse(HTTP_STATUS.OK, null, 'Form rejected successfully'));
 });
