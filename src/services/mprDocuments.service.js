@@ -1,9 +1,11 @@
 import PDFDocument from 'pdfkit';
 import ExcelJS from 'exceljs';
-import ProjectMPR, { PROJECT_MPR_STATUS } from '../models/ProjectMPR.model.js';
+import ProjectMPR, { PROJECT_MPR_STATUS, MPR_STATUS_LABELS } from '../models/ProjectMPR.model.js';
 import ProjectSanction from '../models/ProjectSanction.model.js';
-import { getMpr } from './projectMpr.service.js';
-import USER_ROLES from '../constants/roles.constants.js';
+import { getMpr, piaDepartmentsOf } from './projectMpr.service.js';
+import { statusQuery } from './mprWorkflow.js';
+import USER_ROLES, { WORKFLOW_ROLES } from '../constants/roles.constants.js';
+import { workflowRoleOf } from '../utils/access.js';
 import ApiError from '../utils/ApiError.js';
 import { HTTP_STATUS } from '../constants/http.constants.js';
 
@@ -18,12 +20,8 @@ import { HTTP_STATUS } from '../constants/http.constants.js';
 
 const AUTHORITY = 'Spring and River Rejuvenation Authority (SARRA), Uttarakhand';
 
-const STATUS_LABEL = {
-  [PROJECT_MPR_STATUS.SUBMITTED]: 'Submitted - awaiting district review',
-  [PROJECT_MPR_STATUS.DISTRICT_APPROVED]: 'Approved by district',
-  [PROJECT_MPR_STATUS.RETURNED_TO_PIA]: 'Returned for correction',
-  [PROJECT_MPR_STATUS.STATE_VERIFIED]: 'Verified by State',
-};
+const STATUS_LABEL = MPR_STATUS_LABELS;
+const ENTRY_LABEL = { PIA: 'PIA entry', DISTRICT: 'District Technical Staff entry' };
 
 // ─── Formatting (display only; never changes a value) ────────────────────────
 
@@ -55,6 +53,14 @@ const latin = (value) => String(value ?? '').replace(/₹/g, 'Rs.').replace(/[�
   .replace(/[^\x20-\x7E\xA0-\xFF\n]/g, '').replace(/[ \t]+/g, ' ').trim();
 
 const place = (project) => [project.village, project.gramPanchayat, project.block, project.district].filter(Boolean).join(', ') || '-';
+
+/** "Name on date" of a step of the approval chain, or Pending. */
+const stepText = (report, key) => {
+  const step = (report.chain || []).find((item) => item.key === key);
+  return step?.state === 'done' && step.by ? `${step.by}${step.at ? ` on ${formatDateTime(step.at)}` : ''}` : 'Pending';
+};
+const approvalText = (report) => (report.chain || []).filter((step) => step.key !== 'MAKER' && step.state === 'done')
+  .map((step) => `${step.label}: ${step.by || '-'}`).join('; ') || 'Pending';
 const safeName = (value) => String(value || 'report').replace(/[^A-Za-z0-9._-]+/g, '-');
 
 const collect = (doc) => new Promise((resolve, reject) => {
@@ -134,13 +140,15 @@ export const renderPdf = (report) => {
     ['MPR No.', report.mprNo],
     ['Status', STATUS_LABEL[report.status] || report.status],
     ['Project ID', report.project.code || '-'],
-    ['Department (PIA)', report.departmentName],
+    ['Sanction ID', report.project.sanctionId || '-'],
+    ['Department (PIA)', `${report.departmentName}${report.pia?.name ? ` - ${report.pia.name}` : ''}`],
+    ['Entry mode', ENTRY_LABEL[report.entryMode] || ENTRY_LABEL.PIA],
     ['Project', report.project.projectName || '-'],
     ['Head', `${report.head?.code || ''} ${report.head?.name || ''}`.trim() || '-'],
     ['Location', place(report.project)],
     ['Submitted by', `${report.submittedBy?.name || '-'} on ${formatDateTime(report.submittedAt)}`],
-    ['District review', report.reviewedAt && report.status !== PROJECT_MPR_STATUS.SUBMITTED ? `${report.reviewedBy?.name || '-'} on ${formatDateTime(report.reviewedAt)}` : 'Pending'],
-    ['State verification', report.verifiedAt ? formatDateTime(report.verifiedAt) : 'Pending'],
+    ['District approval', stepText(report, PROJECT_MPR_STATUS.PENDING_DISTRICT_APPROVER)],
+    ['State verification', stepText(report, PROJECT_MPR_STATUS.PENDING_HQ_APPROVER)],
   ];
   const half = width / 2;
   const labelWidth = 86;
@@ -228,14 +236,15 @@ export const renderPdf = (report) => {
     ['Physical progress', formatPercent(report.totals?.physicalPercent)],
     ['Financial progress', `${formatPercent(report.totals?.financialPercent)} (Rs. ${formatMoney(report.totals?.financialTotalLakh)} lakh of Rs. ${formatMoney(report.totals?.financialTargetLakh)} lakh)`],
     ['Balance to be spent', `Rs. ${formatMoney(report.totals?.financialRemainingLakh)} lakh`],
-    ['Funds released to department', `Rs. ${formatMoney(report.funds?.releasedLakh)} lakh in ${report.funds?.installments ?? 0} installment(s); unspent Rs. ${formatMoney(report.funds?.unspentLakh)} lakh`],
+    ['Sanctioned allocation', `Rs. ${formatMoney(report.funds?.departmentBudgetLakh)} lakh; spent Rs. ${formatMoney(report.funds?.spentLakh)} lakh; balance Rs. ${formatMoney(report.funds?.balanceLakh)} lakh`],
+    ['Approvals', approvalText(report)],
   ];
   summary.forEach(([label, value]) => {
     doc.font('Helvetica-Bold').fontSize(8.5).fillColor(MUTED).text(`${label}:`, left, y, { width: 150 });
     doc.font('Helvetica').fontSize(8.5).fillColor(INK).text(latin(value), left + 150, y, { width: width - 150 });
     y = doc.y + 2;
   });
-  const notes = [['Remarks of PIA officer', report.remarks], ['District remarks', report.reviewNote], ['Reason for return', report.status === PROJECT_MPR_STATUS.RETURNED_TO_PIA ? report.returnReason : ''], ['State remarks', report.verificationNote]]
+  const notes = [['Remarks of reporting Maker', report.remarks], ['District remarks', report.reviewNote], ['Reason for return', report.status === PROJECT_MPR_STATUS.RETURNED_FOR_CORRECTION ? report.returnReason : ''], ['Reason for rejection', report.status === PROJECT_MPR_STATUS.REJECTED ? report.rejectionReason : ''], ['State remarks', report.verificationNote]]
     .filter(([, value]) => latin(value));
   notes.forEach(([label, value]) => {
     doc.font('Helvetica-Bold').fontSize(8.5).fillColor(MUTED).text(`${label}:`, left, y, { width: 150 });
@@ -244,9 +253,17 @@ export const renderPdf = (report) => {
   });
 
   const signatureTop = Math.min(Math.max(y + 34, doc.y + 34), bottom() - 26);
-  [['PIA Officer', latin(report.submittedBy?.name || '')], ['District Director', report.status !== PROJECT_MPR_STATUS.SUBMITTED ? latin(report.reviewedBy?.name || '') : ''], ['State (M&E)', '']].forEach(([role, name], index) => {
-    const x = left + index * (width / 3) + 20;
-    const lineWidth = width / 3 - 40;
+  // One signature per tier: the Maker, then the Approver of each tier the report passed through.
+  const signed = (key) => { const step = (report.chain || []).find((item) => item.key === key); return step?.state === 'done' ? latin(step.by || '') : ''; };
+  const signatures = [
+    [report.entryMode === 'DISTRICT' ? 'District Technical Staff' : 'PIA Maker', report.submittedAt ? latin(report.submittedBy?.name || '') : ''],
+    ...(report.entryMode === 'DISTRICT' ? [] : [['PIA Approver', signed(PROJECT_MPR_STATUS.PENDING_PIA_APPROVER)]]),
+    ['District Approver', signed(PROJECT_MPR_STATUS.PENDING_DISTRICT_APPROVER)],
+    ['HQ Approver', signed(PROJECT_MPR_STATUS.PENDING_HQ_APPROVER)],
+  ];
+  signatures.forEach(([role, name], index) => {
+    const x = left + index * (width / signatures.length) + 20;
+    const lineWidth = width / signatures.length - 40;
     doc.lineWidth(0.5).strokeColor(RULE).moveTo(x, signatureTop).lineTo(x + lineWidth, signatureTop).stroke();
     doc.font('Helvetica-Bold').fontSize(8.5).fillColor(INK).text(role, x, signatureTop + 4, { width: lineWidth, align: 'center' });
     if (name) doc.font('Helvetica').fontSize(8).fillColor(MUTED).text(name, x, signatureTop + 15, { width: lineWidth, align: 'center' });
@@ -318,16 +335,19 @@ export const buildMprExcel = async (mprId, user) => {
     ['MPR No.', report.mprNo],
     ['Status', STATUS_LABEL[report.status] || report.status],
     ['Project ID', report.project.code || ''],
+    ['Sanction ID', report.project.sanctionId || ''],
     ['Project', report.project.projectName || ''],
     ['Location', place(report.project)],
-    ['Department (PIA)', report.departmentName],
+    ['Department (PIA)', `${report.departmentName}${report.pia?.name ? ` - ${report.pia.name}` : ''}`],
+    ['Entry mode', ENTRY_LABEL[report.entryMode] || ENTRY_LABEL.PIA],
     ['Head', `${report.head?.code || ''} ${report.head?.name || ''}`.trim()],
     ['Financial Year', report.financialYear],
     ['Reporting Month', report.reportingMonth],
     ['Submitted by', report.submittedBy?.name || ''],
     ['Submitted on', formatDateTime(report.submittedAt)],
-    ['District review', report.reviewedAt && report.status !== PROJECT_MPR_STATUS.SUBMITTED ? `${report.reviewedBy?.name || ''} on ${formatDateTime(report.reviewedAt)}` : 'Pending'],
-    ['State verification', report.verifiedAt ? formatDateTime(report.verifiedAt) : 'Pending'],
+    ['District approval', stepText(report, PROJECT_MPR_STATUS.PENDING_DISTRICT_APPROVER)],
+    ['State verification', stepText(report, PROJECT_MPR_STATUS.PENDING_HQ_APPROVER)],
+    ['Approval chain', approvalText(report)],
   ];
   particulars.forEach(([label, value], index) => {
     const row = sheet.getRow(4 + index);
@@ -392,9 +412,9 @@ export const buildMprExcel = async (mprId, user) => {
     ['Physical progress (%)', report.totals?.physicalPercent ?? 0, '0.00'],
     ['Financial progress (%)', report.totals?.financialPercent ?? 0, '0.00'],
     ['Balance to be spent (Rs. lakh)', report.totals?.financialRemainingLakh ?? 0, MONEY_FORMAT],
-    ['Funds released to department (Rs. lakh)', report.funds?.releasedLakh ?? 0, MONEY_FORMAT],
-    ['Unspent out of released (Rs. lakh)', report.funds?.unspentLakh ?? 0, MONEY_FORMAT],
-    ['Remarks of PIA officer', report.remarks || '', null],
+    ['Sanctioned allocation of department (Rs. lakh)', report.funds?.departmentBudgetLakh ?? 0, MONEY_FORMAT],
+    ['Balance of sanctioned allocation (Rs. lakh)', report.funds?.balanceLakh ?? 0, MONEY_FORMAT],
+    ['Remarks of reporting Maker', report.remarks || '', null],
     ['District remarks', report.reviewNote || '', null],
   ];
   tail.forEach(([label, value, format]) => {
@@ -417,11 +437,13 @@ const escapeRegex = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 
 /** Reports a user may export, narrowed by the filters. Scope comes from the user, never from the request. */
 export const registerFilter = async (user, { status, financialYear, month, district, headCode, departmentId, projectId, search } = {}) => {
-  const filter = {};
+  // Drafts are private to their Maker and are never part of a register.
+  const filter = { status: { $ne: PROJECT_MPR_STATUS.DRAFT } };
   if (user.role === USER_ROLES.PIA_OFFICER) {
-    const projects = await ProjectSanction.find({ 'departmentAllocations.piaUserId': user._id }).select('departmentAllocations.departmentId departmentAllocations.piaUserId').lean();
-    const pairs = projects.flatMap((project) => (project.departmentAllocations || [])
-      .filter((department) => String(department.piaUserId || '') === String(user._id))
+    const maker = workflowRoleOf(user) === WORKFLOW_ROLES.MAKER;
+    const projects = await ProjectSanction.find(maker ? { 'departmentAllocations.piaUserId': user._id } : { district: user.district })
+      .select('district departmentAllocations.departmentId departmentAllocations.departmentName departmentAllocations.piaUserId').lean();
+    const pairs = projects.flatMap((project) => piaDepartmentsOf(project, user)
       .map((department) => ({ project: project._id, departmentId: department.departmentId })));
     if (!pairs.length) return null;
     filter.$or = pairs;
@@ -431,7 +453,8 @@ export const registerFilter = async (user, { status, financialYear, month, distr
   } else if (![USER_ROLES.SUPER_ADMIN, USER_ROLES.MND_SUPER_ADMIN, USER_ROLES.MND_OFFICER].includes(user.role)) {
     throw new ApiError(HTTP_STATUS.FORBIDDEN, 'You do not have permission to export reports.');
   }
-  if (Object.values(PROJECT_MPR_STATUS).includes(status)) filter.status = status;
+  const wanted = statusQuery(status);
+  if (wanted.status) filter.$and = [...(filter.$and || []), { status: wanted.status }];
   if (/^\d{4}-\d{2}$/.test(financialYear || '')) filter.financialYear = financialYear;
   if (month) filter.reportingMonth = month;
   if (district && user.role !== USER_ROLES.DD_LEVEL) filter.district = district;
@@ -440,7 +463,7 @@ export const registerFilter = async (user, { status, financialYear, month, distr
   if (/^[a-f0-9]{24}$/i.test(projectId || '')) filter.project = projectId;
   if (search && search.trim()) {
     const pattern = new RegExp(escapeRegex(search.trim().slice(0, 80)), 'i');
-    filter.$and = [{ $or: [{ mprNo: pattern }, { projectCode: pattern }, { projectTitle: pattern }, { departmentName: pattern }] }];
+    filter.$and = [...(filter.$and || []), { $or: [{ mprNo: pattern }, { projectCode: pattern }, { projectTitle: pattern }, { departmentName: pattern }] }];
   }
   return filter;
 };
@@ -481,7 +504,7 @@ export const buildRegisterWorkbook = async (filter, title) => {
       totals.activities ?? 0, totals.physicalPercent ?? 0, totals.financialTargetLakh ?? 0, totals.financialPreviousLakh ?? 0, totals.financialCurrentLakh ?? 0,
       totals.financialTotalLakh ?? 0, totals.financialRemainingLakh ?? 0, totals.financialPercent ?? 0,
       report.submittedBy?.name || '', formatDateTime(report.submittedAt),
-      report.reviewedAt && report.status !== PROJECT_MPR_STATUS.SUBMITTED ? formatDateTime(report.reviewedAt) : '', report.verifiedAt ? formatDateTime(report.verifiedAt) : '',
+      report.reviewedAt ? formatDateTime(report.reviewedAt) : '', report.verifiedAt ? formatDateTime(report.verifiedAt) : '',
     ]);
     [12, 13, 14, 15, 16].forEach((column) => { row.getCell(column).numFmt = MONEY_FORMAT; });
     [11, 17].forEach((column) => { row.getCell(column).numFmt = '0.00'; });

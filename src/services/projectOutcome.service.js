@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import ProjectSanction from '../models/ProjectSanction.model.js';
 import { OutcomeIndicator, ProjectOutcome, OUTCOME_KIND } from '../models/ProjectLifecycle.model.js';
 import { uploadFile, deleteFile } from './upload.service.js';
+import { piaDepartmentsOf } from './projectMpr.service.js';
 import { SANCTION_STATUS } from '../constants/status.constants.js';
 import USER_ROLES from '../constants/roles.constants.js';
 import ApiError from '../utils/ApiError.js';
@@ -68,7 +69,7 @@ const isOwnDistrict = (project, user) => user.role === USER_ROLES.DD_LEVEL && Bo
 const canRead = (project, user) => {
   if ([USER_ROLES.SUPER_ADMIN, USER_ROLES.MND_SUPER_ADMIN, USER_ROLES.MND_OFFICER].includes(user.role)) return true;
   if (user.role === USER_ROLES.DD_LEVEL) return isOwnDistrict(project, user);
-  return (project.departmentAllocations || []).some((d) => sameId(d.piaUserId, user._id));
+  return piaDepartmentsOf(project, user).length > 0;
 };
 
 // Readings are taken on the ground, so they start once the project is sanctioned.

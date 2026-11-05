@@ -1,22 +1,25 @@
 import mongoose from 'mongoose';
 import ProjectSanction from '../models/ProjectSanction.model.js';
 import ProjectRevision, { REVISION_STATUS } from '../models/ProjectRevision.model.js';
-import ProjectMPR from '../models/ProjectMPR.model.js';
-import { BudgetAllocationEntry } from '../models/BudgetAllocation.model.js';
+import ProjectMPR, { PROJECT_MPR_STATUS } from '../models/ProjectMPR.model.js';
 import { getActiveHead } from './masterData.service.js';
 import { buildAllocation, rollUpTargets, roundMoney } from './projectCreation.service.js';
+import { historyStep } from './sanction.service.js';
 import { runInTransaction } from '../utils/transaction.js';
 import { SANCTION_STATUS } from '../constants/status.constants.js';
+import { WORKFLOW_ROLES } from '../constants/roles.constants.js';
+import { isHq, sameId } from '../utils/access.js';
 import ApiError from '../utils/ApiError.js';
 import { HTTP_STATUS } from '../constants/http.constants.js';
 
 /**
- * Revised estimates for sanctioned projects.
+ * Target revisions (revised estimates) for sanctioned projects, through the
+ * HQ Maker → Checker → Approver chain. Progress beyond an approved target is
+ * only accepted after a revision raises it.
  *
  * A revision may change each department's shares and its activity targets.
- * It can never go below what has already happened: a department's total cannot
- * drop under the funds released to it, and an activity's targets cannot drop
- * under the progress already reported.
+ * It can never go below what has already happened: an activity's targets
+ * cannot drop under the progress already reported.
  */
 
 const REVISABLE = [
@@ -49,16 +52,11 @@ const figuresOf = (allocation) => ({
   })),
 });
 
-/** What has already happened on the project: funds released and progress reported, per department. */
+/** What has already happened on the project: progress reported, per department (rejected reports do not count). */
 const loadFloor = async (projectId, session) => {
-  const entriesQuery = BudgetAllocationEntry.find({ project: projectId }).select('departmentId amountLakh').lean();
-  const reportsQuery = ProjectMPR.find({ project: projectId }).select('departmentId activities.activityCode activities.activityName activities.physicalCurrent activities.financialCurrentLakh').lean();
-  const [entries, reports] = await Promise.all([
-    session ? entriesQuery.session(session) : entriesQuery,
-    session ? reportsQuery.session(session) : reportsQuery,
-  ]);
-  const released = new Map();
-  entries.forEach((e) => released.set(String(e.departmentId), (released.get(String(e.departmentId)) || 0) + money(e.amountLakh)));
+  const reportsQuery = ProjectMPR.find({ project: projectId, status: { $ne: PROJECT_MPR_STATUS.REJECTED } })
+    .select('departmentId activities.activityCode activities.activityName activities.physicalCurrent activities.financialCurrentLakh').lean();
+  const reports = await (session ? reportsQuery.session(session) : reportsQuery);
   const reported = new Map(); // departmentId -> Map(activityCode -> { physical, financial, name })
   reports.forEach((r) => {
     const key = String(r.departmentId);
@@ -70,7 +68,7 @@ const loadFloor = async (projectId, session) => {
       reported.get(key).set(a.activityCode, row);
     });
   });
-  return { released, reported };
+  return { reported };
 };
 
 /** Validate a proposal against the Head master and against what has already happened. */
@@ -87,11 +85,6 @@ const buildProposal = async (project, inputs, session) => {
     const input = list.find((i) => i.departmentId === String(current.departmentId));
     const allocation = buildAllocation(input, { _id: current.departmentId, name: current.departmentName }, head);
     const name = current.departmentName;
-
-    const releasedUnits = floor.released.get(String(current.departmentId)) || 0;
-    if (money(allocation.totalLakh) < releasedUnits) {
-      throw bad(`${name}: the revised total (${lakh(money(allocation.totalLakh))}) cannot be less than the funds already released (${lakh(releasedUnits)}).`);
-    }
     const proposedByCode = new Map(allocation.activities.map((a) => [a.activityCode, a]));
     (floor.reported.get(String(current.departmentId)) || new Map()).forEach((done, code) => {
       if (done.physical === 0 && done.financial === 0) return;
@@ -144,7 +137,7 @@ export const listRevisions = async (projectId) => {
 
 /** Maker proposes a revised estimate. */
 export const createRevision = async (projectId, body = {}, makerUser) => {
-  if (makerUser.workflowRole !== 'MAKER') throw forbidden('Only Makers can propose a revision.');
+  if (!isHq(makerUser, WORKFLOW_ROLES.MAKER)) throw forbidden('Only the HQ Maker can propose a target revision.');
   if (!isId(projectId)) throw notFound('Project not found.');
   const project = await ProjectSanction.findById(projectId).lean();
   if (!project) throw notFound('Project not found.');
@@ -189,8 +182,9 @@ const loadPending = async (revisionId, expectedStatus, session) => {
 
 /** Checker verifies a proposed revision. */
 export const verifyRevision = async (revisionId, note, checkerUser) => {
-  if (checkerUser.workflowRole !== 'CHECKER') throw forbidden('Only Checkers can verify a revision.');
+  if (!isHq(checkerUser, WORKFLOW_ROLES.CHECKER)) throw forbidden('Only the HQ Checker can verify a revision.');
   const revision = await loadPending(revisionId, REVISION_STATUS.PENDING_CHECKER);
+  if (sameId(revision.makerUserId, checkerUser._id)) throw forbidden('You proposed this revision, so you cannot verify it.');
   revision.status = REVISION_STATUS.PENDING_APPROVER;
   revision.checkerUserId = checkerUser._id;
   revision.checkerNote = String(note ?? '').trim().slice(0, 1000);
@@ -206,8 +200,8 @@ export const rejectRevision = async (revisionId, reason, user) => {
   if (!isId(revisionId)) throw notFound('Revision not found.');
   const revision = await ProjectRevision.findById(revisionId);
   if (!revision) throw notFound('Revision not found.');
-  const allowed = (revision.status === REVISION_STATUS.PENDING_CHECKER && user.workflowRole === 'CHECKER')
-    || (revision.status === REVISION_STATUS.PENDING_APPROVER && user.workflowRole === 'APPROVER');
+  const allowed = (revision.status === REVISION_STATUS.PENDING_CHECKER && isHq(user, WORKFLOW_ROLES.CHECKER))
+    || (revision.status === REVISION_STATUS.PENDING_APPROVER && isHq(user, WORKFLOW_ROLES.APPROVER));
   if (!allowed) throw forbidden('You cannot reject this revision at its current stage.');
   revision.status = REVISION_STATUS.REJECTED;
   revision.rejectedBy = user._id;
@@ -218,15 +212,18 @@ export const rejectRevision = async (revisionId, reason, user) => {
 };
 
 /**
- * Approver approves: the project takes the revised figures. Done in one
- * transaction and re-validated first, because funds may have been released or
- * progress reported since the revision was proposed.
+ * HQ Approver authorises the revision: the project takes the revised figures.
+ * Done in one transaction and re-validated first, because progress may have
+ * been reported since the revision was proposed.
  */
 export const approveRevision = async (revisionId, note, approverUser) => {
-  if (approverUser.workflowRole !== 'APPROVER') throw forbidden('Only Approvers can approve a revision.');
+  if (!isHq(approverUser, WORKFLOW_ROLES.APPROVER)) throw forbidden('Only the HQ Approver can authorise a revision.');
   return runInTransaction(async (session) => {
     const options = session ? { session } : {};
     const revision = await loadPending(revisionId, REVISION_STATUS.PENDING_APPROVER, session);
+    if (sameId(revision.makerUserId, approverUser._id) || sameId(revision.checkerUserId, approverUser._id)) {
+      throw forbidden('You proposed or verified this revision, so you cannot approve it.');
+    }
     const projectQuery = ProjectSanction.findById(revision.project);
     const project = await (session ? projectQuery.session(session) : projectQuery);
     if (!project) throw notFound('Project not found.');
@@ -255,27 +252,11 @@ export const approveRevision = async (revisionId, note, approverUser) => {
     project.sarraShareLakh = roundMoney(allocations.reduce((s, a) => s + a.sarraShareLakh, 0));
     project.totalSanctionedBudgetLakh = roundMoney(project.deptShareLakh + project.sarraShareLakh);
     project.sanctionedTargets = rollUpTargets(allocations, head);
-
-    // Budget position against the new total.
-    const releasedUnits = money(project.budgetAllocation?.releasedLakh);
-    const totalUnits = money(project.totalSanctionedBudgetLakh);
-    project.budgetAllocation = {
-      ...(project.budgetAllocation?.toObject?.() || project.budgetAllocation || {}),
-      totalLakh: totalUnits / MONEY,
-      releasedLakh: releasedUnits / MONEY,
-      remainingLakh: Math.max(0, totalUnits - releasedUnits) / MONEY,
-      status: releasedUnits <= 0 ? 'NOT_ALLOCATED' : releasedUnits >= totalUnits ? 'FULLY_ALLOCATED' : 'PARTIALLY_ALLOCATED',
-    };
-    project.budgetVersion = (project.budgetVersion || 0) + 1;
+    // Reports being saved at this instant are validated again against the new targets.
     project.mprVersion = (project.mprVersion || 0) + 1;
 
     const now = new Date();
-    project.workflowHistory.push({
-      action: 'REVISED',
-      performedBy: approverUser._id,
-      performedAt: now,
-      note: `Revision ${revision.revisionNo} approved: ${revision.reason}`,
-    });
+    project.workflowHistory.push(historyStep(approverUser, 'REVISED', `Target revision ${revision.revisionNo} approved: ${revision.reason}`));
     await project.save(options);
 
     revision.status = REVISION_STATUS.APPROVED;

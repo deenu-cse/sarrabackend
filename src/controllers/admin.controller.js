@@ -1,10 +1,17 @@
+import mongoose from 'mongoose';
 import User from '../models/User.model.js';
 import AuditLog from '../models/AuditLog.model.js';
-import { registerUser, inviteUser } from '../services/auth.service.js';
+import { registerUser, inviteUser, approveUserRequest, rejectUserRequest } from '../services/auth.service.js';
+import { assertCanRequest, canDecide, canManageStatus, listScope, permissionsOf } from '../services/userAccess.service.js';
+import { safeNotify } from '../services/workflowNotification.service.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import ApiResponse from '../utils/ApiResponse.js';
+import ApiError from '../utils/ApiError.js';
 import paginate from '../utils/paginate.js';
 import { HTTP_STATUS } from '../constants/http.constants.js';
+import { TIERS, WORKFLOW_ROLES } from '../constants/roles.constants.js';
+import { actorLabel, escapeRegex, tierRoleQuery } from '../utils/access.js';
+import logger from '../config/logger.js';
 import NodeCache from 'node-cache';
 import {
   sendAccountSuspendedEmail,
@@ -21,27 +28,92 @@ export const createUser = asyncHandler(async (req, res) => {
   res.status(HTTP_STATUS.CREATED).json(new ApiResponse(HTTP_STATUS.CREATED, user, 'User created successfully'));
 });
 
+/**
+ * POST /users/invite — the HQ administrator invites directly; the HQ Maker and
+ * District Makers request the account, and it waits for their tier's Approver.
+ */
 export const inviteUserHandler = asyncHandler(async (req, res) => {
-  const user = await inviteUser(req.body, req.user);
+  const scope = assertCanRequest(req.user, req.body);
+  const user = await inviteUser(req.body, req.user, { pendingApproval: !scope.direct, tier: scope.tier });
   res.locals.auditTargetId = user._id;
+  res.locals.auditMetadata = { requested: !scope.direct, role: user.role, workflowRole: user.workflowRole, district: user.district };
+
+  if (!scope.direct) {
+    try {
+      const approvers = await User.find(scope.tier === TIERS.DISTRICT
+        ? tierRoleQuery(TIERS.DISTRICT, WORKFLOW_ROLES.APPROVER, { district: scope.district })
+        : tierRoleQuery(TIERS.HQ, WORKFLOW_ROLES.APPROVER));
+      await safeNotify(approvers, {
+        title: `Account request: ${user.name}`,
+        message: `${req.user.name} (${actorLabel(req.user)}) requested an account for ${user.name} as ${actorLabel(user)}${user.district ? `, ${user.district}` : ''}.`,
+        emailDescription: 'A new user account has been requested and is waiting for your approval. The invitation is sent only after you approve it.',
+        subject: 'Approval Required: SARRA User Account Request',
+        referenceNo: user.email,
+        projectTitle: user.name,
+        actorName: req.user.name,
+        actorRole: actorLabel(req.user),
+        status: 'PENDING_APPROVER',
+        eventDate: new Date(),
+        relatedResource: 'User',
+        relatedId: user._id,
+        priority: 'HIGH',
+        primaryLabel: 'Review Request',
+        linkFor: (recipient) => (recipient.role === 'DD_LEVEL' ? '/dashboard/dd/users' : '/dashboard/admin/users'),
+      });
+    } catch (err) {
+      logger.error(`User request saved but notification failed: ${err.message}`);
+    }
+  }
+
   res
     .status(HTTP_STATUS.CREATED)
-    .json(new ApiResponse(HTTP_STATUS.CREATED, user, 'Invitation sent successfully'));
+    .json(new ApiResponse(HTTP_STATUS.CREATED, user, scope.direct ? 'Invitation sent successfully' : 'Account requested. It will be invited once the Approver approves it.'));
 });
 
-export const getUsers = asyncHandler(async (req, res) => {
-  const { role, district, isActive, search, page = 1, limit = 10 } = req.query;
+const loadTarget = async (id) => {
+  if (!mongoose.isValidObjectId(id)) throw new ApiError(HTTP_STATUS.NOT_FOUND, 'User not found');
+  const user = await User.findById(id);
+  if (!user) throw new ApiError(HTTP_STATUS.NOT_FOUND, 'User not found');
+  return user;
+};
 
-  const matchObj = {};
-  if (role) matchObj.role = role;
-  if (district) matchObj.district = district;
+/** PATCH /users/:id/approve — the tier Approver approves an account request */
+export const approveUserHandler = asyncHandler(async (req, res) => {
+  const target = await loadTarget(req.params.id);
+  if (!canDecide(req.user, target)) throw new ApiError(HTTP_STATUS.FORBIDDEN, target.approval?.status === 'PENDING' ? 'Only the Approver of the requesting tier can approve this account, and never the person who requested it.' : 'This account is not awaiting approval.');
+  const user = await approveUserRequest(target, req.user, req.body?.note);
+  res.locals.auditTargetId = user._id;
+  res.locals.auditMetadata = { targetEmail: user.email, role: user.role, workflowRole: user.workflowRole };
+  res.status(HTTP_STATUS.OK).json(new ApiResponse(HTTP_STATUS.OK, user, 'Account approved and invitation sent'));
+});
+
+/** PATCH /users/:id/reject — the tier Approver rejects an account request */
+export const rejectUserHandler = asyncHandler(async (req, res) => {
+  const target = await loadTarget(req.params.id);
+  if (!canDecide(req.user, target)) throw new ApiError(HTTP_STATUS.FORBIDDEN, 'You cannot decide this account request.');
+  const reason = String(req.body?.reason ?? '').replace(/\s+/g, ' ').trim().slice(0, 500);
+  if (reason.length < 5) throw new ApiError(HTTP_STATUS.BAD_REQUEST, 'Give the reason for rejecting the request.');
+  const user = await rejectUserRequest(target, req.user, reason);
+  res.locals.auditTargetId = user._id;
+  res.locals.auditMetadata = { targetEmail: user.email, reason };
+  res.status(HTTP_STATUS.OK).json(new ApiResponse(HTTP_STATUS.OK, user, 'Account request rejected'));
+});
+
+/** GET /users — accounts within the user's administrative scope, with what they may do with each */
+export const getUsers = asyncHandler(async (req, res) => {
+  const scope = listScope(req.user);
+  if (!scope) throw new ApiError(HTTP_STATUS.FORBIDDEN, 'You do not have access to user management.');
+  const { role, district, isActive, search, workflowRole, approval, page = 1, limit = 10 } = req.query;
+
+  const matchObj = { ...scope };
+  if (typeof role === 'string' && role) matchObj.role = scope.role ? { $in: scope.role.$in.filter((value) => value === role) } : role;
+  if (typeof district === 'string' && district && !scope.district) matchObj.district = district;
+  if (typeof workflowRole === 'string' && ['MAKER', 'CHECKER', 'APPROVER'].includes(workflowRole)) matchObj.workflowRole = workflowRole;
+  if (approval === 'PENDING') matchObj['approval.status'] = 'PENDING';
   if (isActive !== undefined) matchObj.isActive = isActive === 'true';
-  if (search) {
-    matchObj.$or = [
-      { name: { $regex: search, $options: 'i' } },
-      { email: { $regex: search, $options: 'i' } },
-      { employeeId: { $regex: search, $options: 'i' } }
-    ];
+  if (typeof search === 'string' && search.trim()) {
+    const pattern = new RegExp(escapeRegex(search.trim().slice(0, 60)), 'i');
+    matchObj.$or = [{ name: pattern }, { email: pattern }, { employeeId: pattern }];
   }
 
   const pipeline = [
@@ -51,11 +123,31 @@ export const getUsers = asyncHandler(async (req, res) => {
   ];
 
   const result = await paginate(User, pipeline, page, limit);
+  const data = result.data.map((user) => ({
+    ...user,
+    roleLabel: actorLabel(user),
+    canApprove: canDecide(req.user, user),
+    canManage: canManageStatus(req.user, user),
+  }));
+  const pendingApproval = await User.countDocuments({ ...scope, 'approval.status': 'PENDING' });
 
-  res.status(HTTP_STATUS.OK).json(new ApiResponse(HTTP_STATUS.OK, result.data, 'Users fetched successfully', result.pagination));
+  res.status(HTTP_STATUS.OK).json({
+    ...new ApiResponse(HTTP_STATUS.OK, data, 'Users fetched successfully', result.pagination),
+    permissions: permissionsOf(req.user),
+    pendingApproval,
+  });
 });
 
+/** Throws unless the signed-in user may change this account's status. */
+const assertManageable = async (req) => {
+  const target = await loadTarget(req.params.id);
+  if (!canManageStatus(req.user, target)) {
+    throw new ApiError(HTTP_STATUS.FORBIDDEN, req.params.id === String(req.user._id) ? 'Cannot change status of your own account' : 'You cannot change the status of this account.');
+  }
+};
+
 export const toggleUserActive = asyncHandler(async (req, res) => {
+  await assertManageable(req);
   const { id } = req.params;
 
   if (id === req.user._id.toString()) {
@@ -96,6 +188,7 @@ const assertNotSelf = (req, id) => {
 };
 
 export const suspendUser = asyncHandler(async (req, res) => {
+  await assertManageable(req);
   const { id } = req.params;
   const { until, reason } = req.body;
 
@@ -168,6 +261,7 @@ export const suspendUser = asyncHandler(async (req, res) => {
 });
 
 export const deactivateUser = asyncHandler(async (req, res) => {
+  await assertManageable(req);
   const { id } = req.params;
   const { reason } = req.body;
 
@@ -226,6 +320,7 @@ export const deactivateUser = asyncHandler(async (req, res) => {
 });
 
 export const restoreUser = asyncHandler(async (req, res) => {
+  await assertManageable(req);
   const { id } = req.params;
 
   const selfErr = assertNotSelf(req, id);

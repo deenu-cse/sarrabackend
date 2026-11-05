@@ -2,20 +2,21 @@ import mongoose from 'mongoose';
 import ProjectMPR, { PROJECT_MPR_STATUS } from '../models/ProjectMPR.model.js';
 import ProjectSanction from '../models/ProjectSanction.model.js';
 import { uploadFile, deleteFile } from './upload.service.js';
-import USER_ROLES from '../constants/roles.constants.js';
+import { evidenceEditable, reportingDepartments } from './projectMpr.service.js';
+import { firstStageOf } from './mprWorkflow.js';
 import ApiError from '../utils/ApiError.js';
 import { HTTP_STATUS } from '../constants/http.constants.js';
 
 /**
- * Optional evidence on a monthly report: site photographs and measurement
- * sheets. A report is complete without any. Files can be added or removed by
- * the reporting officer until the district approves the report.
+ * Evidence on a monthly report: field photographs and supporting documents.
+ * Files can be added or removed by the department's reporting Maker (PIA
+ * Maker or District Technical Staff) until the first reviewer acts on the
+ * report, and again while it is back with the Maker for correction.
  */
 
 export const MAX_EVIDENCE = 6;
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
 const FILE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'];
-const EDITABLE = [PROJECT_MPR_STATUS.SUBMITTED, PROJECT_MPR_STATUS.RETURNED_TO_PIA];
 
 const bad = (message) => new ApiError(HTTP_STATUS.BAD_REQUEST, message);
 const forbidden = (message) => new ApiError(HTTP_STATUS.FORBIDDEN, message);
@@ -34,18 +35,21 @@ export const evidenceDto = (item) => ({
   uploadedAt: item.uploadedAt || null,
 });
 
-/** The report, if this user is the officer currently holding its department and it can still be changed. */
+/** The report, if this user is the reporting Maker of its department and it can still be changed. */
 const editableReport = async (mprId, user) => {
   if (typeof mprId !== 'string' || !mongoose.isValidObjectId(mprId)) throw notFound('Report not found.');
-  const mpr = await ProjectMPR.findById(mprId).select('project departmentId status evidence mprNo').lean();
+  const mpr = await ProjectMPR.findById(mprId).select('project departmentId status entryMode evidence mprNo').lean();
   if (!mpr) throw notFound('Report not found.');
-  if (user.role !== USER_ROLES.PIA_OFFICER) throw forbidden('Only the reporting PIA officer can change the evidence of a report.');
-  const project = await ProjectSanction.findById(mpr.project).select('departmentAllocations.departmentId departmentAllocations.piaUserId').lean();
-  const holds = (project?.departmentAllocations || []).some((department) => String(department.departmentId) === String(mpr.departmentId) && String(department.piaUserId || '') === String(user._id));
-  if (!holds) throw forbidden('You are not the assigned PIA officer for this department.');
-  if (!EDITABLE.includes(mpr.status)) throw conflict('Evidence can be changed only until the district approves the report.', 'REPORT_LOCKED');
+  const project = await ProjectSanction.findById(mpr.project)
+    .select('district departmentAllocations.departmentId departmentAllocations.piaUserId departmentAllocations.districtStaffUserId departmentAllocations.reportingMode').lean();
+  const holds = project && reportingDepartments(project, user).some((department) => String(department.departmentId) === String(mpr.departmentId));
+  if (!holds) throw forbidden('Only the reporting Maker of this department can change the evidence of its reports.');
+  if (!evidenceEditable(mpr)) throw conflict('Evidence can be changed only until the first reviewer acts on the report.', 'REPORT_LOCKED');
   return mpr;
 };
+
+/** Statuses at which a report's evidence can still change, for the conditional writes below. */
+const editableStatuses = (mpr) => [PROJECT_MPR_STATUS.DRAFT, PROJECT_MPR_STATUS.RETURNED_FOR_CORRECTION, firstStageOf(mpr.entryMode)];
 
 /** Attach up to six files in total to a report. */
 export const addEvidence = async (mprId, files = [], body = {}, user) => {
@@ -82,7 +86,7 @@ export const addEvidence = async (mprId, files = [], body = {}, user) => {
     }
     // The size check is part of the write, so two uploads at once cannot go past the limit.
     const updated = await ProjectMPR.updateOne(
-      { _id: mpr._id, status: { $in: EDITABLE }, [`evidence.${MAX_EVIDENCE - stored.length}`]: { $exists: false } },
+      { _id: mpr._id, status: { $in: editableStatuses(mpr) }, [`evidence.${MAX_EVIDENCE - stored.length}`]: { $exists: false } },
       { $push: { evidence: { $each: stored } } },
     );
     if (updated.modifiedCount !== 1) throw conflict('The report changed while the files were uploading. Please reload and try again.', 'STALE');
@@ -99,8 +103,8 @@ export const removeEvidence = async (mprId, evidenceId, user) => {
   const mpr = await editableReport(mprId, user);
   const item = (mpr.evidence || []).find((entry) => String(entry._id) === String(evidenceId));
   if (!item) throw notFound('File not found on this report.');
-  const updated = await ProjectMPR.updateOne({ _id: mpr._id, status: { $in: EDITABLE } }, { $pull: { evidence: { _id: item._id } } });
-  if (updated.modifiedCount !== 1) throw conflict('Evidence can be changed only until the district approves the report.', 'REPORT_LOCKED');
+  const updated = await ProjectMPR.updateOne({ _id: mpr._id, status: { $in: editableStatuses(mpr) } }, { $pull: { evidence: { _id: item._id } } });
+  if (updated.modifiedCount !== 1) throw conflict('Evidence can be changed only until the first reviewer acts on the report.', 'REPORT_LOCKED');
   if (item.publicId) deleteFile(item.publicId);
   const fresh = await ProjectMPR.findById(mpr._id).select('evidence mprNo').lean();
   return { mprNo: fresh.mprNo, removed: item.name, evidence: (fresh.evidence || []).map(evidenceDto) };

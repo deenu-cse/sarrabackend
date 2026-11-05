@@ -3,6 +3,7 @@ import { getProjectAnalytics } from '../services/projectAnalytics.service.js';
 import { notifyProjectMpr } from '../services/workflowNotification.service.js';
 import * as evidence from '../services/mprEvidence.service.js';
 import * as documents from '../services/mprDocuments.service.js';
+import { PROJECT_MPR_STATUS } from '../models/ProjectMPR.model.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import ApiResponse from '../utils/ApiResponse.js';
 import { HTTP_STATUS } from '../constants/http.constants.js';
@@ -22,12 +23,15 @@ const auditOf = (mpr) => ({
   department: mpr.departmentName,
   head: mpr.head?.code,
   period: `${mpr.reportingMonth} ${mpr.financialYear}`,
+  entryMode: mpr.entryMode,
   status: mpr.status,
   financialCurrentLakh: mpr.totals?.financialCurrentLakh,
   financialTotalLakh: mpr.totals?.financialTotalLakh,
 });
 
-/** GET /workload — projects and departments the signed-in PIA officer reports on */
+const saved = (mpr) => ({ id: String(mpr._id), mprNo: mpr.mprNo, status: mpr.status, entryMode: mpr.entryMode });
+
+/** GET /workload — projects and departments the signed-in reporting Maker reports on */
 export const getWorkload = asyncHandler(async (req, res) => {
   ok(res, await mprService.getWorkload(req.user), 'Assigned projects fetched');
 });
@@ -52,28 +56,34 @@ export const previewMpr = asyncHandler(async (req, res) => {
   ok(res, await mprService.previewMpr(req.body, req.user), 'MPR is valid');
 });
 
-/** POST / — final validation and save */
+/** POST / — final validation and save, as a draft (`asDraft`) or submitted to the first reviewer */
 export const submitMpr = asyncHandler(async (req, res) => {
   const mpr = await mprService.submitMpr(req.body, req.user);
   res.locals.auditTargetId = mpr._id;
   res.locals.auditMetadata = auditOf(mpr);
-  await notify({ mpr, actor: req.user, event: 'SUBMITTED' });
-  res.status(HTTP_STATUS.CREATED).json(new ApiResponse(HTTP_STATUS.CREATED, { id: String(mpr._id), mprNo: mpr.mprNo, status: mpr.status }, 'MPR submitted to district'));
+  if (mpr.status !== PROJECT_MPR_STATUS.DRAFT) await notify({ mpr, actor: req.user, event: 'SUBMITTED' });
+  res.status(HTTP_STATUS.CREATED).json(new ApiResponse(HTTP_STATUS.CREATED, saved(mpr), mpr.status === PROJECT_MPR_STATUS.DRAFT ? 'MPR saved as draft' : 'MPR submitted for verification'));
 });
 
-/** GET /mine — the PIA officer's reports */
+/** GET /mine — the reports of the signed-in PIA user or District Technical Staff */
 export const listMine = asyncHandler(async (req, res) => {
   const result = await mprService.listMine(req.user, { status: single(req.query.status), page: req.query.page, limit: req.query.limit });
   res.status(HTTP_STATUS.OK).json(new ApiResponse(HTTP_STATUS.OK, result.data, 'MPRs fetched', result.pagination));
 });
 
-/** GET /district — reports of the District Director's district */
+/** GET /queue — reports waiting for the signed-in user's own action */
+export const listQueue = asyncHandler(async (req, res) => {
+  const result = await mprService.listQueue(req.user, { limit: req.query.limit });
+  res.status(HTTP_STATUS.OK).json(new ApiResponse(HTTP_STATUS.OK, result.data, 'Pending actions fetched', { total: result.total }));
+});
+
+/** GET /district — reports of the district */
 export const listForDistrict = asyncHandler(async (req, res) => {
   const result = await mprService.listForDistrict(req.user, { status: single(req.query.status), page: req.query.page, limit: req.query.limit });
   res.status(HTTP_STATUS.OK).json(new ApiResponse(HTTP_STATUS.OK, result.data, 'District MPRs fetched', result.pagination));
 });
 
-/** GET /analytics — State-wide analytics over projects, budget releases and progress reports */
+/** GET /analytics — State-wide analytics over projects and progress reports */
 export const getAnalytics = asyncHandler(async (req, res) => {
   const pick = (key) => single(req.query[key]);
   ok(res, await getProjectAnalytics({
@@ -82,13 +92,14 @@ export const getAnalytics = asyncHandler(async (req, res) => {
   }), 'Analytics fetched');
 });
 
-/** GET /all — every project MPR in the State (State admin, M&E admin) */
+/** GET /all — every project MPR in the State (HQ, M&E administrator) */
 export const listAll = asyncHandler(async (req, res) => {
   const result = await mprService.listAll({
     status: single(req.query.status),
     financialYear: single(req.query.financialYear),
     district: single(req.query.district),
     headCode: single(req.query.headCode),
+    entryMode: single(req.query.entryMode),
     search: single(req.query.search),
     page: req.query.page,
     limit: req.query.limit,
@@ -96,67 +107,71 @@ export const listAll = asyncHandler(async (req, res) => {
   res.status(HTTP_STATUS.OK).json({ ...new ApiResponse(HTTP_STATUS.OK, result.data, 'MPRs fetched', result.pagination), summary: result.summary });
 });
 
-/** PATCH /:id/state-verify — M&E admin verifies a district-approved report */
-export const stateVerify = asyncHandler(async (req, res) => {
-  const mpr = await mprService.stateVerify(req.params.id, req.body?.note, req.user);
-  res.locals.auditMetadata = auditOf(mpr);
-  await notify({ mpr, actor: req.user, event: 'VERIFIED' });
-  ok(res, { id: String(mpr._id), status: mpr.status }, 'MPR verified by State');
-});
-
-/** PATCH /:id/state-return — M&E admin sends a district-approved report back for correction */
-export const stateReturn = asyncHandler(async (req, res) => {
-  const mpr = await mprService.stateReturn(req.params.id, req.body?.reason, req.user);
-  res.locals.auditMetadata = { ...auditOf(mpr), reason: mpr.returnReason, level: 'STATE' };
-  await notify({ mpr, actor: req.user, event: 'RETURNED' });
-  ok(res, { id: String(mpr._id), status: mpr.status }, 'MPR returned to PIA by State');
-});
-
 /** GET /project/:projectId — reports filed against one project */
 export const listForProject = asyncHandler(async (req, res) => {
   ok(res, await mprService.listForProject(req.params.projectId, req.user), 'Project MPRs fetched');
 });
 
-/** GET /:id — one report */
+/** GET /:id — one report, with what the signed-in user may do with it */
 export const getMpr = asyncHandler(async (req, res) => {
   ok(res, await mprService.getMpr(req.params.id, req.user), 'MPR fetched');
 });
 
-/** GET /:id/form — correction form for a returned report */
-export const getResubmitForm = asyncHandler(async (req, res) => {
-  ok(res, await mprService.getResubmitForm(req.params.id, req.user), 'MPR correction form fetched');
+/** GET /:id/form — editing form for a draft or a returned report */
+export const getEditForm = asyncHandler(async (req, res) => {
+  ok(res, await mprService.getEditForm(req.params.id, req.user), 'MPR form fetched');
 });
 
-/** POST /:id/preview — validate a correction; saves nothing */
-export const previewResubmit = asyncHandler(async (req, res) => {
-  ok(res, await mprService.previewResubmit(req.params.id, req.body, req.user), 'MPR is valid');
+/** POST /:id/preview — validate an edit; saves nothing */
+export const previewEdit = asyncHandler(async (req, res) => {
+  ok(res, await mprService.previewEdit(req.params.id, req.body, req.user), 'MPR is valid');
 });
 
-/** PATCH /:id/resubmit — save a correction */
-export const resubmitMpr = asyncHandler(async (req, res) => {
-  const mpr = await mprService.resubmitMpr(req.params.id, req.body, req.user);
+/** PATCH /:id/resubmit — save an edit; submitted to the first reviewer unless `asDraft` */
+export const saveMpr = asyncHandler(async (req, res) => {
+  const asDraft = req.body?.asDraft === true || req.body?.asDraft === 'true';
+  const mpr = await mprService.saveMpr(req.params.id, req.body, req.user);
   res.locals.auditMetadata = auditOf(mpr);
-  await notify({ mpr, actor: req.user, event: 'RESUBMITTED' });
-  ok(res, { id: String(mpr._id), mprNo: mpr.mprNo, status: mpr.status }, 'MPR resubmitted to district');
+  const resubmitted = (mpr.revisionHistory || []).some((step) => step.action === 'RETURNED');
+  if (!asDraft) await notify({ mpr, actor: req.user, event: resubmitted ? 'RESUBMITTED' : 'SUBMITTED' });
+  ok(res, saved(mpr), asDraft ? 'Changes saved' : (resubmitted ? 'MPR corrected and resubmitted' : 'MPR submitted for verification'));
 });
 
-/** PATCH /:id/district-approve */
-export const districtApprove = asyncHandler(async (req, res) => {
-  const mpr = await mprService.districtApprove(req.params.id, req.body?.note, req.user);
-  res.locals.auditMetadata = auditOf(mpr);
-  await notify({ mpr, actor: req.user, event: 'APPROVED' });
-  ok(res, { id: String(mpr._id), status: mpr.status }, 'MPR approved by district');
+/** DELETE /:id — discard a draft */
+export const deleteDraft = asyncHandler(async (req, res) => {
+  const result = await mprService.deleteDraft(req.params.id, req.user);
+  res.locals.auditMetadata = { mprNo: result.mprNo, department: result.departmentName, period: result.period, stage: 'DRAFT_DISCARDED' };
+  ok(res, result, 'Draft discarded');
 });
 
-/** PATCH /:id/return */
-export const returnToPia = asyncHandler(async (req, res) => {
-  const mpr = await mprService.returnToPia(req.params.id, req.body?.reason, req.user);
-  res.locals.auditMetadata = { ...auditOf(mpr), reason: mpr.returnReason };
+// --- Review chain ---
+
+/** PATCH /:id/forward — take the current review step and send the report on */
+export const forwardMpr = asyncHandler(async (req, res) => {
+  const { mpr, from } = await mprService.forwardMpr(req.params.id, req.body?.note, req.user);
+  res.locals.auditMetadata = { ...auditOf(mpr), from };
+  const verified = mpr.status === PROJECT_MPR_STATUS.VERIFIED_BY_STATE;
+  await notify({ mpr, actor: req.user, event: verified ? 'VERIFIED' : 'FORWARDED' });
+  ok(res, { id: String(mpr._id), status: mpr.status }, verified ? 'MPR verified by State' : 'MPR forwarded');
+});
+
+/** PATCH /:id/return — back to the reporting Maker with remarks */
+export const returnMpr = asyncHandler(async (req, res) => {
+  const mpr = await mprService.returnMpr(req.params.id, req.body?.reason, req.user);
+  res.locals.auditMetadata = { ...auditOf(mpr), reason: mpr.returnReason, level: mpr.returnedByLevel, by: mpr.returnedByRole };
   await notify({ mpr, actor: req.user, event: 'RETURNED' });
-  ok(res, { id: String(mpr._id), status: mpr.status }, 'MPR returned to PIA');
+  ok(res, { id: String(mpr._id), status: mpr.status }, 'MPR returned to its Maker for correction');
 });
 
-// --- Evidence (optional) ---
+/** PATCH /:id/reject — an Approver rejects the report with a recorded reason */
+export const rejectMpr = asyncHandler(async (req, res) => {
+  const mpr = await mprService.rejectMpr(req.params.id, req.body?.reason, req.user);
+  res.locals.auditMetadata = { ...auditOf(mpr), reason: mpr.rejectionReason, by: mpr.rejectedByRole };
+  await notify({ mpr, actor: req.user, event: 'REJECTED' });
+  ok(res, { id: String(mpr._id), status: mpr.status }, 'MPR rejected');
+});
+
+// --- Evidence ---
 
 /** POST /:id/evidence (multipart, field "files") */
 export const addEvidence = asyncHandler(async (req, res) => {

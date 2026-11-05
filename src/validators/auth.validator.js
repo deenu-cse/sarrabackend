@@ -2,6 +2,20 @@ import Joi from 'joi';
 import USER_ROLES from '../constants/roles.constants.js';
 import { DISTRICTS } from '../constants/districts.constants.js';
 
+/**
+ * Every District and PIA account is a Maker, Checker or Approver of its tier.
+ * An HQ account may be one too, or (without a role) an HQ administrator.
+ * M&E accounts take no workflow role.
+ */
+const WORKFLOW_ROLE = Joi.string().valid('MAKER', 'CHECKER', 'APPROVER');
+const workflowRoleRule = Joi.any().when('role', {
+  switch: [
+    { is: Joi.string().valid(USER_ROLES.PIA_OFFICER, USER_ROLES.DD_LEVEL), then: WORKFLOW_ROLE.required().messages({ 'any.required': 'Select the workflow role (Maker, Checker or Approver) of this District or PIA account' }) },
+    { is: USER_ROLES.SUPER_ADMIN, then: WORKFLOW_ROLE.optional().allow(null, '') },
+  ],
+  otherwise: Joi.any().valid(null, '').optional().messages({ 'any.only': 'M&E accounts take no workflow role' }),
+});
+
 export const registerSchema = Joi.object({
   name: Joi.string().trim().required(),
   email: Joi.string().email().trim().required(),
@@ -19,7 +33,8 @@ export const registerSchema = Joi.object({
   }),
   employeeId: Joi.string().optional().allow(''),
   phone: Joi.string().optional().allow(''),
-  designation: Joi.string().optional().allow('')
+  designation: Joi.string().optional().allow(''),
+  workflowRole: workflowRoleRule
 });
 
 export const loginSchema = Joi.object({
@@ -64,7 +79,7 @@ export const inviteUserSchema = Joi.object({
   employeeId: Joi.string().optional().allow(''),
   phone: Joi.string().optional().allow(''),
   designation: Joi.string().optional().allow(''),
-  workflowRole: Joi.string().valid('MAKER', 'CHECKER', 'APPROVER').optional().allow(null, '')
+  workflowRole: workflowRoleRule
 });
 
 export const verifyInviteOtpSchema = Joi.object({

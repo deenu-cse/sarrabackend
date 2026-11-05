@@ -1,29 +1,32 @@
-import ProjectSanction from '../models/ProjectSanction.model.js';
+import ProjectSanction, { REPORTING_MODE } from '../models/ProjectSanction.model.js';
 import ProjectMPR, { PROJECT_MPR_STATUS } from '../models/ProjectMPR.model.js';
-import { BudgetAllocationEntry } from '../models/BudgetAllocation.model.js';
+import User from '../models/User.model.js';
 import { SANCTION_STATUS } from '../constants/status.constants.js';
+import { AT_DISTRICT, AT_HQ, AT_PIA, IN_REVIEW, statusLabel, stageOwner } from './mprWorkflow.js';
 
 /**
  * State-wide analytics over the project workflow:
- *   projects (sanction pipeline) → budget released in installments → monthly
- *   progress reported by each department's PIA officer.
+ *   projects (sanction pipeline) → monthly progress reported for each
+ *   department → three-tier verification of each report.
  *
  * Scope of the filters
  *   district / department / headCode / projectStatus   choose which project
  *                                                      departments are counted
  *   financialYear / month                              restrict time-based
- *                                                      figures (released,
- *                                                      spent, reports, trend)
+ *                                                      figures (spent, reports,
+ *                                                      trend)
  *   mprStatus                                          restrict reports only
  *
  * Sanctioned budget is a project-lifetime figure and is never time-filtered.
- * All money is in Rs. lakh; sums are done in whole rupees.
+ * All money is in Rs. lakh; sums are done in whole rupees. Drafts and rejected
+ * reports are never counted.
  */
 
 const MONEY = 100000;
 const toMoney = (value) => Math.round((Number(value) || 0) * MONEY);
 const fromMoney = (units) => units / MONEY;
 const percent = (part, whole) => (whole > 0 ? Math.round((part / whole) * 1000) / 10 : 0);
+const DAY = 86400000;
 
 const FY_MONTHS = ['April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December', 'January', 'February', 'March'];
 const FY_LABEL = /^(\d{4})-(\d{2})$/;
@@ -42,10 +45,12 @@ const PIPELINE = [
   SANCTION_STATUS.PIA_ACCEPTED, SANCTION_STATUS.REJECTED,
 ];
 
+const COUNTED = (status) => status !== PROJECT_MPR_STATUS.DRAFT && status !== PROJECT_MPR_STATUS.REJECTED;
+
 const emptyBucket = (name) => ({
-  name, projects: new Set(), departments: 0, budget: 0, sarra: 0, released: 0, spent: 0,
-  reports: 0, awaitingDistrict: 0, awaitingState: 0, verified: 0, returned: 0,
-  physicalSum: 0, physicalCount: 0, assigned: 0, accepted: 0,
+  name, projects: new Set(), departments: 0, budget: 0, sarra: 0, spent: 0,
+  reports: 0, atPia: 0, atDistrict: 0, atHq: 0, verified: 0, returned: 0, rejected: 0,
+  physicalSum: 0, physicalCount: 0, assigned: 0, accepted: 0, districtEntry: 0,
 });
 
 const finishBucket = (bucket) => ({
@@ -54,20 +59,20 @@ const finishBucket = (bucket) => ({
   departments: bucket.departments,
   budgetLakh: fromMoney(bucket.budget),
   sarraShareLakh: fromMoney(bucket.sarra),
-  releasedLakh: fromMoney(bucket.released),
   spentLakh: fromMoney(bucket.spent),
-  unspentLakh: fromMoney(Math.max(0, bucket.released - bucket.spent)),
-  releasePercent: percent(bucket.released, bucket.budget),
-  utilisationPercent: percent(bucket.spent, bucket.released),
+  balanceLakh: fromMoney(Math.max(0, bucket.budget - bucket.spent)),
   spendPercent: percent(bucket.spent, bucket.budget),
   physicalPercent: bucket.physicalCount ? Math.round((bucket.physicalSum / bucket.physicalCount) * 10) / 10 : 0,
   reports: bucket.reports,
-  awaitingDistrict: bucket.awaitingDistrict,
-  awaitingState: bucket.awaitingState,
+  atPia: bucket.atPia,
+  atDistrict: bucket.atDistrict,
+  atHq: bucket.atHq,
   verified: bucket.verified,
   returned: bucket.returned,
+  rejected: bucket.rejected,
   piaAssigned: bucket.assigned,
   piaAccepted: bucket.accepted,
+  districtEntry: bucket.districtEntry,
 });
 
 export const getProjectAnalytics = async (query = {}) => {
@@ -82,7 +87,7 @@ export const getProjectAnalytics = async (query = {}) => {
 
   // Everything department-wise (the project workflow); option lists come from the unfiltered set.
   const allProjects = await ProjectSanction.find({ 'departmentAllocations.0': { $exists: true } })
-    .select('projectId sanctionId projectTitle district status head isActive createdAt approverAt departmentAllocations.departmentId departmentAllocations.departmentName departmentAllocations.deptShareLakh departmentAllocations.sarraShareLakh departmentAllocations.totalLakh departmentAllocations.activities departmentAllocations.piaUserId departmentAllocations.piaAcceptedAt')
+    .select('projectId sanctionId projectTitle district status head isActive createdAt approverAt location departmentAllocations.departmentId departmentAllocations.departmentName departmentAllocations.deptShareLakh departmentAllocations.sarraShareLakh departmentAllocations.totalLakh departmentAllocations.activities departmentAllocations.piaUserId departmentAllocations.piaAcceptedAt departmentAllocations.reportingMode departmentAllocations.districtStaffUserId departmentAllocations.reportingAssignedAt')
     .lean();
 
   const options = {
@@ -104,40 +109,48 @@ export const getProjectAnalytics = async (query = {}) => {
     units.set(`${project._id}:${allocation.departmentId}`, { project, allocation });
   }));
   const projectIds = projects.map((p) => p._id);
+  const piaIds = [...new Set([...units.values()].map((u) => String(u.allocation.piaUserId || '')).filter(Boolean))];
 
-  const [entries, reports] = await Promise.all([
-    BudgetAllocationEntry.find({ project: { $in: projectIds } }).select('project departmentId amountLakh allocationDate installmentNumber').lean(),
-    ProjectMPR.find({ project: { $in: projectIds } }).select('-revisionHistory').populate('submittedBy', 'name').sort({ periodIndex: 1 }).lean(),
+  const [reports, piaUsers] = await Promise.all([
+    ProjectMPR.find({ project: { $in: projectIds }, status: { $ne: PROJECT_MPR_STATUS.DRAFT } }).select('-revisionHistory').populate('submittedBy', 'name').sort({ periodIndex: 1 }).lean(),
+    piaIds.length ? User.find({ _id: { $in: piaIds } }).select('name designation').lean() : [],
   ]);
+  const piaName = new Map(piaUsers.map((u) => [String(u._id), u.name]));
 
   const inPeriod = (periodIndex) => (fyStartYear === null || fyStartOfPeriod(periodIndex) === fyStartYear)
     && (!month || FY_MONTHS[((periodIndex % 12) + 9) % 12] === month);
 
   const allYears = new Set();
   reports.forEach((r) => allYears.add(fyStartOfPeriod(r.periodIndex)));
-  entries.forEach((e) => allYears.add(fyStartOfPeriod(periodOfDate(new Date(e.allocationDate)))));
   const now = new Date();
   allYears.add(fyStartOfPeriod(now.getFullYear() * 12 + now.getMonth()));
   options.financialYears = [...allYears].sort((a, b) => b - a).map(fyLabel);
 
-  const scopedEntries = entries.filter((e) => units.has(`${e.project}:${e.departmentId}`) && inPeriod(periodOfDate(new Date(e.allocationDate))));
   const unitReports = reports.filter((r) => units.has(`${r.project}:${r.departmentId}`));
   const scopedReports = unitReports.filter((r) => inPeriod(r.periodIndex) && (!mprStatus || r.status === mprStatus));
 
   // ── Buckets ────────────────────────────────────────────────────────────────
   const total = emptyBucket('All');
-  const byDistrict = new Map(); const byDepartment = new Map(); const byHead = new Map();
+  const byDistrict = new Map(); const byDepartment = new Map(); const byHead = new Map(); const byPia = new Map();
   const bucketOf = (map, name) => { if (!map.has(name)) map.set(name, emptyBucket(name)); return map.get(name); };
-  const bucketsFor = ({ project, allocation }) => [
-    total,
-    bucketOf(byDistrict, project.district || 'Unknown'),
-    bucketOf(byDepartment, allocation.departmentName),
-    bucketOf(byHead, project.head?.code ? `${project.head.code} ${project.head.name || ''}`.trim() : 'No head'),
-  ];
+  const piaKey = (unit) => (unit.allocation.piaUserId ? `${unit.allocation.piaUserId}|${unit.project.district}|${unit.allocation.departmentName}` : null);
+  const bucketsFor = (unit) => {
+    const list = [
+      total,
+      bucketOf(byDistrict, unit.project.district || 'Unknown'),
+      bucketOf(byDepartment, unit.allocation.departmentName),
+      bucketOf(byHead, unit.project.head?.code ? `${unit.project.head.code} ${unit.project.head.name || ''}`.trim() : 'No head'),
+    ];
+    const key = piaKey(unit);
+    if (key) {
+      const bucket = bucketOf(byPia, key);
+      bucket.label = `${piaName.get(String(unit.allocation.piaUserId)) || 'PIA'} — ${unit.allocation.departmentName}, ${unit.project.district}`;
+      list.push(bucket);
+    }
+    return list;
+  };
 
-  const unitFigures = new Map(); // released / spent per unit, in scope
-  units.forEach((unit, key) => {
-    unitFigures.set(key, { released: 0, spent: 0, lifetimeReleased: 0, lifetimeSpent: 0 });
+  units.forEach((unit) => {
     bucketsFor(unit).forEach((bucket) => {
       bucket.projects.add(String(unit.project._id));
       bucket.departments += 1;
@@ -145,36 +158,25 @@ export const getProjectAnalytics = async (query = {}) => {
       bucket.sarra += toMoney(unit.allocation.sarraShareLakh);
       if (unit.allocation.piaUserId) bucket.assigned += 1;
       if (unit.allocation.piaAcceptedAt) bucket.accepted += 1;
+      if (unit.allocation.reportingMode === REPORTING_MODE.DISTRICT) bucket.districtEntry += 1;
     });
   });
 
-  entries.forEach((entry) => {
-    const figures = unitFigures.get(`${entry.project}:${entry.departmentId}`);
-    if (figures) figures.lifetimeReleased += toMoney(entry.amountLakh);
-  });
-  scopedEntries.forEach((entry) => {
-    const key = `${entry.project}:${entry.departmentId}`;
-    unitFigures.get(key).released += toMoney(entry.amountLakh);
-    bucketsFor(units.get(key)).forEach((bucket) => { bucket.released += toMoney(entry.amountLakh); });
-  });
-
-  const latestReport = new Map(); // latest report in scope per unit (reports are sorted by period)
-  unitReports.forEach((report) => {
-    const figures = unitFigures.get(`${report.project}:${report.departmentId}`);
-    figures.lifetimeSpent += toMoney(report.totals?.financialCurrentLakh);
-  });
+  const latestReport = new Map(); // latest counted report in scope per unit (reports are sorted by period)
   scopedReports.forEach((report) => {
     const key = `${report.project}:${report.departmentId}`;
-    const spent = toMoney(report.totals?.financialCurrentLakh);
-    unitFigures.get(key).spent += spent;
-    latestReport.set(key, report);
+    const counted = COUNTED(report.status);
+    const spent = counted ? toMoney(report.totals?.financialCurrentLakh) : 0;
+    if (counted) latestReport.set(key, report);
     bucketsFor(units.get(key)).forEach((bucket) => {
       bucket.spent += spent;
-      bucket.reports += 1;
-      if (report.status === PROJECT_MPR_STATUS.SUBMITTED) bucket.awaitingDistrict += 1;
-      else if (report.status === PROJECT_MPR_STATUS.DISTRICT_APPROVED) bucket.awaitingState += 1;
-      else if (report.status === PROJECT_MPR_STATUS.STATE_VERIFIED) bucket.verified += 1;
-      else if (report.status === PROJECT_MPR_STATUS.RETURNED_TO_PIA) bucket.returned += 1;
+      if (counted) bucket.reports += 1;
+      if (AT_PIA.includes(report.status)) bucket.atPia += 1;
+      else if (AT_DISTRICT.includes(report.status)) bucket.atDistrict += 1;
+      else if (AT_HQ.includes(report.status)) bucket.atHq += 1;
+      else if (report.status === PROJECT_MPR_STATUS.VERIFIED_BY_STATE) bucket.verified += 1;
+      else if (report.status === PROJECT_MPR_STATUS.RETURNED_FOR_CORRECTION) bucket.returned += 1;
+      else if (report.status === PROJECT_MPR_STATUS.REJECTED) bucket.rejected += 1;
     });
   });
   latestReport.forEach((report, key) => {
@@ -191,29 +193,40 @@ export const getProjectAnalytics = async (query = {}) => {
     };
   });
 
-  // ── Monthly trend: released vs spent vs reports filed ──────────────────────
+  // ── Pending Maker / Checker / Approver actions on reports ──────────────────
+  const pendingByStage = IN_REVIEW.map((status) => {
+    const waiting = unitReports.filter((r) => r.status === status);
+    const oldest = waiting.reduce((max, r) => Math.max(max, now - new Date(r.stageEnteredAt || r.updatedAt || now).getTime()), 0);
+    return { status, label: statusLabel(status), owner: stageOwner(status), count: waiting.length, oldestDays: Math.floor(oldest / DAY) };
+  });
+
+  // ── Monthly trend: expenditure and reports filed ───────────────────────────
   const trend = new Map();
-  const trendRow = (periodIndex) => { if (!trend.has(periodIndex)) trend.set(periodIndex, { periodIndex, released: 0, spent: 0, reports: 0 }); return trend.get(periodIndex); };
-  scopedEntries.forEach((entry) => { trendRow(periodOfDate(new Date(entry.allocationDate))).released += toMoney(entry.amountLakh); });
-  scopedReports.forEach((report) => { const row = trendRow(report.periodIndex); row.spent += toMoney(report.totals?.financialCurrentLakh); row.reports += 1; });
+  const trendRow = (periodIndex) => { if (!trend.has(periodIndex)) trend.set(periodIndex, { periodIndex, spent: 0, reports: 0, verified: 0 }); return trend.get(periodIndex); };
+  scopedReports.filter((r) => COUNTED(r.status)).forEach((report) => {
+    const row = trendRow(report.periodIndex);
+    row.spent += toMoney(report.totals?.financialCurrentLakh);
+    row.reports += 1;
+    if (report.status === PROJECT_MPR_STATUS.VERIFIED_BY_STATE) row.verified += 1;
+  });
   const periods = [...trend.keys()].sort((a, b) => a - b);
   const monthlyTrend = [];
   if (periods.length) {
-    let cumulativeReleased = 0; let cumulativeSpent = 0;
+    let cumulativeSpent = 0;
     // Fill gaps so the axis is continuous (capped to keep the chart readable).
     const first = Math.max(periods[0], periods[periods.length - 1] - 35);
     for (let periodIndex = first; periodIndex <= periods[periods.length - 1]; periodIndex += 1) {
-      const row = trend.get(periodIndex) || { released: 0, spent: 0, reports: 0 };
-      cumulativeReleased += row.released; cumulativeSpent += row.spent;
+      const row = trend.get(periodIndex) || { spent: 0, reports: 0, verified: 0 };
+      cumulativeSpent += row.spent;
       monthlyTrend.push({
         period: periodLabel(periodIndex), label: shortPeriod(periodIndex),
-        releasedLakh: fromMoney(row.released), spentLakh: fromMoney(row.spent), reports: row.reports,
-        cumulativeReleasedLakh: fromMoney(cumulativeReleased), cumulativeSpentLakh: fromMoney(cumulativeSpent),
+        spentLakh: fromMoney(row.spent), reports: row.reports, verified: row.verified,
+        cumulativeSpentLakh: fromMoney(cumulativeSpent),
       });
     }
   }
 
-  // ── Activities: planned vs reported ────────────────────────────────────────
+  // ── Activities: approved DPR targets vs achieved ───────────────────────────
   const activities = new Map();
   units.forEach(({ allocation }) => (allocation.activities || []).forEach((activity) => {
     const row = activities.get(activity.activityName) || { name: activity.activityName, unit: activity.unit || '', physicalTarget: 0, physicalDone: 0, financialTarget: 0, financialDone: 0, departments: 0 };
@@ -222,7 +235,7 @@ export const getProjectAnalytics = async (query = {}) => {
     row.departments += 1;
     activities.set(activity.activityName, row);
   }));
-  scopedReports.forEach((report) => (report.activities || []).forEach((activity) => {
+  scopedReports.filter((r) => COUNTED(r.status)).forEach((report) => (report.activities || []).forEach((activity) => {
     const row = activities.get(activity.activityName);
     if (!row) return;
     row.physicalDone += Math.round((activity.physicalCurrent || 0) * 1000);
@@ -242,27 +255,25 @@ export const getProjectAnalytics = async (query = {}) => {
     const { project, allocation } = units.get(key);
     return { projectId: String(project._id), projectCode: project.projectId || project.sanctionId || '', projectName: project.projectTitle || '', district: project.district, department: allocation.departmentName };
   };
+  const readySince = (allocation) => (allocation.reportingMode === REPORTING_MODE.DISTRICT
+    ? (allocation.districtStaffUserId ? allocation.reportingAssignedAt || null : null)
+    : allocation.piaAcceptedAt || null);
 
-  // Spending ahead of release is judged on lifetime figures, whatever the period filter.
-  const overspent = [...unitFigures.entries()]
-    .filter(([, f]) => f.lifetimeSpent > f.lifetimeReleased)
-    .map(([key, f]) => ({ ...unitRow(key), releasedLakh: fromMoney(f.lifetimeReleased), spentLakh: fromMoney(f.lifetimeSpent), excessLakh: fromMoney(f.lifetimeSpent - f.lifetimeReleased) }))
-    .sort((a, b) => b.excessLakh - a.excessLakh);
-
-  const idleFunds = [...unitFigures.entries()]
-    .filter(([, f]) => f.lifetimeReleased > 0 && f.lifetimeSpent * 2 < f.lifetimeReleased)
-    .map(([key, f]) => ({ ...unitRow(key), releasedLakh: fromMoney(f.lifetimeReleased), spentLakh: fromMoney(f.lifetimeSpent), utilisationPercent: percent(f.lifetimeSpent, f.lifetimeReleased) }))
-    .sort((a, b) => b.releasedLakh - a.releasedLakh);
-
-  // Reporting compliance for the last completed month: accepted departments that filed for it.
+  // Reporting compliance for the last completed month: departments ready for reporting that filed for it.
   const lastCompleted = now.getFullYear() * 12 + now.getMonth() - 1;
-  const filedLastMonth = new Set(unitReports.filter((r) => r.periodIndex === lastCompleted).map((r) => `${r.project}:${r.departmentId}`));
-  const expected = [...units.entries()].filter(([, unit]) => unit.allocation.piaAcceptedAt && periodOfDate(new Date(unit.allocation.piaAcceptedAt)) <= lastCompleted);
+  const filedLastMonth = new Set(unitReports.filter((r) => r.periodIndex === lastCompleted && COUNTED(r.status)).map((r) => `${r.project}:${r.departmentId}`));
+  const expected = [...units.entries()].filter(([, unit]) => readySince(unit.allocation) && periodOfDate(new Date(readySince(unit.allocation))) <= lastCompleted);
   const missing = expected.filter(([key]) => !filedLastMonth.has(key)).map(([key]) => unitRow(key));
 
   const unassigned = [...units.entries()]
-    .filter(([, unit]) => !unit.allocation.piaUserId && [SANCTION_STATUS.DISTRICT_ACCEPTED, SANCTION_STATUS.FORWARDED_TO_PIA].includes(unit.project.status))
+    .filter(([, unit]) => !readySince(unit.allocation) && [SANCTION_STATUS.DISTRICT_ACCEPTED, SANCTION_STATUS.FORWARDED_TO_PIA].includes(unit.project.status))
     .map(([key]) => unitRow(key));
+
+  // Departments whose reported physical progress lags far behind their spending.
+  const lagging = [...latestReport.entries()]
+    .filter(([, r]) => (r.totals?.financialPercent || 0) - (r.totals?.physicalPercent || 0) >= 25)
+    .map(([key, r]) => ({ ...unitRow(key), physicalPercent: r.totals?.physicalPercent || 0, financialPercent: r.totals?.financialPercent || 0 }))
+    .sort((a, b) => (b.financialPercent - b.physicalPercent) - (a.financialPercent - a.physicalPercent));
 
   const totals = finishBucket(total);
   const sortByBudget = (list) => list.map(finishBucket).sort((a, b) => b.budgetLakh - a.budgetLakh);
@@ -275,20 +286,23 @@ export const getProjectAnalytics = async (query = {}) => {
       ...totals,
       activeProjects: projects.filter((p) => p.isActive).length,
       sanctionedProjects: projects.filter((p) => ![SANCTION_STATUS.PENDING_CHECKER, SANCTION_STATUS.PENDING_APPROVER, SANCTION_STATUS.REJECTED, SANCTION_STATUS.DRAFT].includes(p.status)).length,
-      overspentDepartments: overspent.length,
-      installments: scopedEntries.length,
+      pendingActions: pendingByStage.reduce((sum, row) => sum + row.count, 0),
     },
     pipeline,
+    pendingByStage,
     reportStatus: {
-      awaitingDistrict: totals.awaitingDistrict,
-      awaitingState: totals.awaitingState,
+      atPia: totals.atPia,
+      atDistrict: totals.atDistrict,
+      atHq: totals.atHq,
       verified: totals.verified,
       returned: totals.returned,
+      rejected: totals.rejected,
     },
     monthlyTrend,
     byDistrict: sortByBudget([...byDistrict.values()]),
     byDepartment: sortByBudget([...byDepartment.values()]),
     byHead: sortByBudget([...byHead.values()]),
+    byPia: [...byPia.values()].map((bucket) => ({ ...finishBucket(bucket), name: bucket.label })).sort((a, b) => b.budgetLakh - a.budgetLakh).slice(0, 50),
     activityProgress,
     compliance: {
       period: periodLabel(lastCompleted),
@@ -299,14 +313,13 @@ export const getProjectAnalytics = async (query = {}) => {
       missingCount: missing.length,
     },
     attention: {
-      overspent: overspent.slice(0, 25),
-      idleFunds: idleFunds.slice(0, 25),
+      lagging: lagging.slice(0, 25),
       unassigned: unassigned.slice(0, 25),
       unassignedCount: unassigned.length,
     },
-    recentReports: [...scopedReports].sort((a, b) => new Date(b.submittedAt) - new Date(a.submittedAt)).slice(0, 12).map((r) => ({
+    recentReports: [...scopedReports].sort((a, b) => new Date(b.submittedAt || b.updatedAt) - new Date(a.submittedAt || a.updatedAt)).slice(0, 12).map((r) => ({
       id: String(r._id), mprNo: r.mprNo, period: periodLabel(r.periodIndex), district: r.district, department: r.departmentName,
-      projectCode: r.projectCode, status: r.status, spentLakh: r.totals?.financialCurrentLakh || 0, physicalPercent: r.totals?.physicalPercent || 0,
+      projectCode: r.projectCode, status: r.status, entryMode: r.entryMode || 'PIA', spentLakh: r.totals?.financialCurrentLakh || 0, physicalPercent: r.totals?.physicalPercent || 0,
       submittedBy: r.submittedBy?.name || '', submittedAt: r.submittedAt,
     })),
   };

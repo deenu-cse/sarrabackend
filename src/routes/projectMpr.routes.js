@@ -11,33 +11,39 @@ import * as ctrl from '../controllers/projectMpr.controller.js';
 /**
  * Project Monthly Progress Reports.
  * Roles are checked here; which project / department / district a user may
- * touch is decided in the service from the database, never from the request.
+ * touch, and which review step they may take, is decided in the service from
+ * the database, never from the request.
  */
 const router = Router();
 router.use(verifyAccessToken);
 
-const pia = requireRole(USER_ROLES.PIA_OFFICER);
-const dd = requireRole(USER_ROLES.DD_LEVEL);
-const readers = requireRole(USER_ROLES.PIA_OFFICER, USER_ROLES.DD_LEVEL, USER_ROLES.SUPER_ADMIN, USER_ROLES.MND_SUPER_ADMIN);
+const { PIA_OFFICER, DD_LEVEL, SUPER_ADMIN, MND_SUPER_ADMIN, MND_OFFICER } = USER_ROLES;
+// Reporting Makers: the PIA Maker, or District Technical Staff (a District Maker)
+const makers = requireRole(PIA_OFFICER, DD_LEVEL);
+// Every tier with Maker / Checker / Approver
+const tiers = requireRole(PIA_OFFICER, DD_LEVEL, SUPER_ADMIN);
+const readers = requireRole(PIA_OFFICER, DD_LEVEL, SUPER_ADMIN, MND_SUPER_ADMIN, MND_OFFICER);
 
-// PIA officer: what can I report on, and the form for a period
-router.get('/workload', pia, ctrl.getWorkload);
-router.get('/context', pia, ctrl.getContext);
-router.get('/form', pia, ctrl.getForm);
-router.post('/preview', pia, ctrl.previewMpr);
-router.post('/', pia, auditLog('MPR_SUBMIT'), ctrl.submitMpr);
-router.get('/mine', pia, ctrl.listMine);
+// Reporting Maker: what can I report on, and the form for a period
+router.get('/workload', makers, ctrl.getWorkload);
+router.get('/context', makers, ctrl.getContext);
+router.get('/form', makers, ctrl.getForm);
+router.post('/preview', makers, ctrl.previewMpr);
+router.post('/', makers, auditLog('MPR_SUBMIT'), ctrl.submitMpr);
+router.get('/mine', makers, ctrl.listMine);
+
+// What is waiting for my action, at any tier
+router.get('/queue', tiers, ctrl.listQueue);
 
 // District
-router.get('/district', dd, ctrl.listForDistrict);
+router.get('/district', requireRole(DD_LEVEL), ctrl.listForDistrict);
 
-// State-wide (State admin and M&E admin)
-router.get('/all', requireRole(USER_ROLES.SUPER_ADMIN, USER_ROLES.MND_SUPER_ADMIN), ctrl.listAll);
-router.get('/analytics', requireRole(USER_ROLES.SUPER_ADMIN, USER_ROLES.MND_SUPER_ADMIN, USER_ROLES.MND_OFFICER), ctrl.getAnalytics);
+// State-wide (HQ and M&E administrator)
+router.get('/all', requireRole(SUPER_ADMIN, MND_SUPER_ADMIN), ctrl.listAll);
+router.get('/analytics', requireRole(SUPER_ADMIN, MND_SUPER_ADMIN, MND_OFFICER), ctrl.getAnalytics);
 
 // Official output. The register is scoped to the user inside the service.
-const everyone = requireRole(USER_ROLES.PIA_OFFICER, USER_ROLES.DD_LEVEL, USER_ROLES.SUPER_ADMIN, USER_ROLES.MND_SUPER_ADMIN, USER_ROLES.MND_OFFICER);
-router.get('/export/register', everyone, ctrl.downloadRegister);
+router.get('/export/register', readers, ctrl.downloadRegister);
 
 const evidenceFiles = (req, res, next) => upload.array('files', 6)(req, res, (err) => {
   if (!err) return next();
@@ -52,21 +58,20 @@ router.get('/:id', readers, ctrl.getMpr);
 router.get('/:id/pdf', readers, ctrl.downloadPdf);
 router.get('/:id/excel', readers, ctrl.downloadExcel);
 
-// Optional evidence, until the district approves the report
-router.post('/:id/evidence', pia, evidenceFiles, auditLog('MPR_EVIDENCE_UPLOAD'), ctrl.addEvidence);
-router.delete('/:id/evidence/:evidenceId', pia, auditLog('MPR_EVIDENCE_UPLOAD'), ctrl.removeEvidence);
+// Evidence, while the report is with its Maker or not yet picked up by the first reviewer
+router.post('/:id/evidence', makers, evidenceFiles, auditLog('MPR_EVIDENCE_UPLOAD'), ctrl.addEvidence);
+router.delete('/:id/evidence/:evidenceId', makers, auditLog('MPR_EVIDENCE_UPLOAD'), ctrl.removeEvidence);
 
-// Correction of a returned report
-router.get('/:id/form', pia, ctrl.getResubmitForm);
-router.post('/:id/preview', pia, ctrl.previewResubmit);
-router.patch('/:id/resubmit', pia, auditLog('MPR_RESUBMIT'), ctrl.resubmitMpr);
+// Drafts and corrections by the reporting Maker
+router.get('/:id/form', makers, ctrl.getEditForm);
+router.post('/:id/preview', makers, ctrl.previewEdit);
+router.patch('/:id/resubmit', makers, auditLog('MPR_RESUBMIT'), ctrl.saveMpr);
+router.delete('/:id', makers, auditLog('MPR_DRAFT_DISCARD'), ctrl.deleteDraft);
 
-// District review
-router.patch('/:id/district-approve', dd, auditLog('MPR_APPROVE'), ctrl.districtApprove);
-router.patch('/:id/return', dd, auditLog('MPR_RETURN'), ctrl.returnToPia);
-
-// State verification
-router.patch('/:id/state-return', requireRole(USER_ROLES.MND_SUPER_ADMIN), auditLog('MPR_RETURN'), ctrl.stateReturn);
-router.patch('/:id/state-verify', requireRole(USER_ROLES.MND_SUPER_ADMIN), auditLog('MPR_APPROVE'), ctrl.stateVerify);
+// Review chain: PIA Checker → PIA Approver → District Maker → District Checker → District Approver
+//               → HQ Maker → HQ Checker → HQ Approver
+router.patch('/:id/forward', tiers, auditLog('MPR_FORWARD'), ctrl.forwardMpr);
+router.patch('/:id/return', tiers, auditLog('MPR_RETURN'), ctrl.returnMpr);
+router.patch('/:id/reject', tiers, auditLog('MPR_REJECT'), ctrl.rejectMpr);
 
 export default router;

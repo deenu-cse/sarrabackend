@@ -27,6 +27,15 @@ const files = (handler) => (req, res, next) => handler(req, res, (err) => {
 });
 const completionFiles = files(upload.fields([{ name: 'completionCertificate', maxCount: 1 }, { name: 'utilisationCertificate', maxCount: 1 }]));
 const evidenceFile = files(upload.single('evidence'));
+const photoFiles = files(upload.array('photos', 6));
+const everyone = requireRole(PIA_OFFICER, DD_LEVEL, SUPER_ADMIN, MND_SUPER_ADMIN, MND_OFFICER);
+
+// Field photographs: pre-, mid- and post-intervention, with GPS and capture time (portal and M&E mobile app)
+router.get('/photos/recent', requireRole(DD_LEVEL, SUPER_ADMIN, MND_SUPER_ADMIN, MND_OFFICER), ctrl.recentPhotos);
+router.get('/:id/photos', everyone, ctrl.listPhotos);
+router.post('/:id/photos', requireRole(PIA_OFFICER, DD_LEVEL, MND_OFFICER), photoFiles, auditLog('PHOTO_UPLOAD'), ctrl.uploadPhotos);
+router.patch('/:id/photos/:photoId/verify', requireRole(DD_LEVEL, SUPER_ADMIN), auditLog('PHOTO_VERIFY'), ctrl.verifyPhoto);
+router.delete('/:id/photos/:photoId', requireRole(PIA_OFFICER, DD_LEVEL, MND_OFFICER), auditLog('PHOTO_UPLOAD'), ctrl.deletePhoto);
 
 // Outcomes across the State
 router.get('/outcomes/indicators', ctrl.listIndicators);
@@ -37,12 +46,11 @@ router.get('/:id/outcomes', ctrl.getProjectOutcomes);
 router.post('/:id/outcomes', requireRole(PIA_OFFICER, DD_LEVEL), evidenceFile, auditLog('OUTCOME_RECORD'), ctrl.recordOutcome);
 router.patch('/:id/outcomes/:entryId/void', requireRole(PIA_OFFICER, DD_LEVEL), auditLog('OUTCOME_RECORD'), ctrl.voidOutcome);
 
-// Completion report, district verification, State closure
-router.get('/:id/completion', requireRole(PIA_OFFICER, DD_LEVEL, SUPER_ADMIN, MND_SUPER_ADMIN), ctrl.getCompletionState);
-router.post('/:id/completion', requireRole(PIA_OFFICER), completionFiles, auditLog('PROJECT_COMPLETION'), ctrl.submitCompletion);
+// Completion report (reporting Maker) → district verification (District Checker / Approver) → closure (HQ Approver)
+router.get('/:id/completion', requireRole(PIA_OFFICER, DD_LEVEL, SUPER_ADMIN, MND_SUPER_ADMIN, MND_OFFICER), ctrl.getCompletionState);
+router.post('/:id/completion', requireRole(PIA_OFFICER, DD_LEVEL), completionFiles, auditLog('PROJECT_COMPLETION'), ctrl.submitCompletion);
 router.patch('/:id/completion/:departmentId/verify', requireRole(DD_LEVEL), auditLog('PROJECT_COMPLETION'), ctrl.verifyCompletion);
 router.patch('/:id/completion/:departmentId/return', requireRole(DD_LEVEL), auditLog('PROJECT_COMPLETION'), ctrl.returnCompletion);
 router.post('/:id/close', requireRole(SUPER_ADMIN), auditLog('PROJECT_CLOSE'), ctrl.closeProject);
-router.patch('/:id/closure/refund', requireRole(SUPER_ADMIN), auditLog('PROJECT_CLOSE'), ctrl.recordRefund);
 
 export default router;

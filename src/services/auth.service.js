@@ -245,30 +245,76 @@ export const resetPasswordWithOtp = async (email, otp, newPassword) => {
 const INVITE_OTP_HOURS = 5;
 
 const ROLE_LABELS = {
-  PIA_OFFICER: 'PIA Officer',
-  DD_LEVEL: 'District Officer (DD Level)',
-  SUPER_ADMIN: 'Super Admin',
-  MND_OFFICER: 'MND Officer',
-  MND_SUPER_ADMIN: 'MND Super Admin'
+  PIA_OFFICER: 'PIA',
+  DD_LEVEL: 'District SARRA Centre',
+  SUPER_ADMIN: 'SARRA HQ',
+  MND_OFFICER: 'M&E Officer',
+  MND_SUPER_ADMIN: 'M&E Administrator'
 };
+const WORKFLOW_LABELS = { MAKER: 'Maker', CHECKER: 'Checker', APPROVER: 'Approver' };
+const roleLabelOf = (user) => `${ROLE_LABELS[user.role] || user.role}${WORKFLOW_LABELS[user.workflowRole] ? ` ${WORKFLOW_LABELS[user.workflowRole]}` : (user.role === 'SUPER_ADMIN' ? ' Administrator' : '')}`;
 
 const getFrontendUrl = () =>
   (process.env.FRONTEND_URL || process.env.CRM_URL || 'http://localhost:3000').replace(/\/$/, '');
 
+/** Generate the invitation OTP for an account and e-mail it. */
+const sendInvitation = async (user, invitedByUser) => {
+  const otp = generateOtp();
+  user.inviteOtpHash = hashOtp(otp);
+  user.inviteOtpExpires = new Date(Date.now() + INVITE_OTP_HOURS * 60 * 60 * 1000);
+  user.invitedAt = new Date();
+  await user.save({ validateBeforeSave: false });
+
+  const inviteLink = `${getFrontendUrl()}/invite?email=${encodeURIComponent(user.email)}`;
+
+  console.log('\n********** USER INVITE OTP **********');
+  console.log(`Email:  ${user.email}`);
+  console.log(`OTP:    ${otp}`);
+  console.log(`Link:   ${inviteLink}`);
+  console.log(`Valid:  ${INVITE_OTP_HOURS} hours`);
+  console.log('*************************************\n');
+
+  await sendEmail({
+    to: user.email,
+    subject: 'You are invited to SARRA MIS/MPR Portal',
+    template: 'userInvite.html',
+    data: {
+      name: user.name,
+      email: user.email,
+      otp,
+      inviteLink,
+      roleLabel: roleLabelOf(user),
+      invitedByName: invitedByUser.name || 'SARRA HQ',
+      expiryHours: INVITE_OTP_HOURS,
+      year: new Date().getFullYear()
+    }
+  });
+};
+
+const toPublicUser = (user) => {
+  const userObj = user.toObject();
+  delete userObj.password;
+  delete userObj.inviteOtpHash;
+  return userObj;
+};
+
 /**
  * Invite a new user (no password). Sends professional email with OTP (5h expiry).
+ *
+ * With `pendingApproval` (an account requested by a tier Maker) the account is
+ * created but no invitation is sent until the tier's Approver approves it.
  */
-export const inviteUser = async (inviteData, invitedByUser) => {
+export const inviteUser = async (inviteData, invitedByUser, { pendingApproval = false, tier } = {}) => {
   const email = inviteData.email.toLowerCase().trim();
   const existing = await User.findOne({ email });
 
   if (existing && !existing.invitePending) {
     throw new ApiError(HTTP_STATUS.CONFLICT, 'A user with this email already exists');
   }
+  if (existing?.approval?.status === 'PENDING') {
+    throw new ApiError(HTTP_STATUS.CONFLICT, 'An account request for this email is already awaiting approval');
+  }
 
-  const otp = generateOtp();
-  const otpHash = hashOtp(otp);
-  const otpExpires = new Date(Date.now() + INVITE_OTP_HOURS * 60 * 60 * 1000);
   const tempPassword = crypto.randomBytes(24).toString('hex');
 
   const payload = {
@@ -283,12 +329,18 @@ export const inviteUser = async (inviteData, invitedByUser) => {
     workflowRole: inviteData.workflowRole || null,
     password: tempPassword,
     invitePending: true,
-    inviteOtpHash: otpHash,
-    inviteOtpExpires: otpExpires,
-    invitedAt: new Date(),
+    inviteOtpHash: undefined,
+    inviteOtpExpires: undefined,
     invitedBy: invitedByUser._id,
     createdBy: invitedByUser._id,
-    isActive: true
+    isActive: true,
+    // A rejected request for the same email can be made again.
+    accountStatus: 'ACTIVE',
+    deactivatedAt: undefined,
+    deactivationReason: undefined,
+    approval: pendingApproval
+      ? { status: 'PENDING', tier, requestedBy: invitedByUser._id, requestedAt: new Date() }
+      : { status: 'APPROVED', tier: tier || 'HQ', requestedBy: invitedByUser._id, requestedAt: new Date(), decidedBy: invitedByUser._id, decidedAt: new Date() }
   };
 
   let user;
@@ -299,35 +351,33 @@ export const inviteUser = async (inviteData, invitedByUser) => {
     user = await User.create(payload);
   }
 
-  const inviteLink = `${getFrontendUrl()}/invite?email=${encodeURIComponent(email)}`;
+  if (!pendingApproval) await sendInvitation(user, invitedByUser);
+  return toPublicUser(user);
+};
 
-  console.log('\n********** USER INVITE OTP **********');
-  console.log(`Email:  ${email}`);
-  console.log(`OTP:    ${otp}`);
-  console.log(`Link:   ${inviteLink}`);
-  console.log(`Valid:  ${INVITE_OTP_HOURS} hours`);
-  console.log('*************************************\n');
+/** The tier Approver approves a requested account; the invitation goes out now. */
+export const approveUserRequest = async (user, approver, note) => {
+  user.approval.status = 'APPROVED';
+  user.approval.decidedBy = approver._id;
+  user.approval.decidedAt = new Date();
+  user.approval.note = String(note ?? '').trim().slice(0, 500) || undefined;
+  await user.save({ validateBeforeSave: false });
+  await sendInvitation(user, approver);
+  return toPublicUser(user);
+};
 
-  await sendEmail({
-    to: email,
-    subject: 'You are invited to SARRA CRM Portal',
-    template: 'userInvite.html',
-    data: {
-      name: user.name,
-      email,
-      otp,
-      inviteLink,
-      roleLabel: ROLE_LABELS[user.role] || user.role,
-      invitedByName: invitedByUser.name || 'SARRA Super Admin',
-      expiryHours: INVITE_OTP_HOURS,
-      year: new Date().getFullYear()
-    }
-  });
-
-  const userObj = user.toObject();
-  delete userObj.password;
-  delete userObj.inviteOtpHash;
-  return userObj;
+/** The tier Approver rejects a requested account; no invitation is sent. */
+export const rejectUserRequest = async (user, approver, reason) => {
+  user.approval.status = 'REJECTED';
+  user.approval.decidedBy = approver._id;
+  user.approval.decidedAt = new Date();
+  user.approval.note = reason;
+  user.isActive = false;
+  user.accountStatus = 'DEACTIVATED';
+  user.deactivatedAt = new Date();
+  user.deactivationReason = `Account request rejected: ${reason}`;
+  await user.save({ validateBeforeSave: false });
+  return toPublicUser(user);
 };
 
 export const verifyInviteOtp = async (email, otp) => {
@@ -415,7 +465,7 @@ export const acceptInvite = async (email, otp, newPassword) => {
     template: 'welcomeUser.html',
     data: {
       name: invitedUser.name,
-      roleLabel: ROLE_LABELS[invitedUser.role] || invitedUser.role,
+      roleLabel: roleLabelOf(invitedUser),
       loginLink,
       year: new Date().getFullYear()
     }

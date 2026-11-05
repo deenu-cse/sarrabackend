@@ -8,6 +8,7 @@ import { SANCTION_STATUS } from '../constants/status.constants.js';
 import ApiError from '../utils/ApiError.js';
 import { HTTP_STATUS } from '../constants/http.constants.js';
 import { runInTransaction } from '../utils/transaction.js';
+import { actorLabel, designationOf } from '../utils/access.js';
 
 const MAX_PIA = 10;
 const MAX_AMOUNT_LAKH = 10000000; // sanity ceiling per figure
@@ -351,7 +352,9 @@ export const createProject = async (data = {}, makerUser) => {
       action: 'CREATED',
       performedBy: makerUser._id,
       performedAt: now,
-      note: makerNote || 'Project created by Maker',
+      role: actorLabel(makerUser),
+      designation: designationOf(makerUser),
+      note: makerNote || 'Project created with DPR details by HQ Maker',
     }],
   };
 
@@ -394,7 +397,7 @@ export const createProject = async (data = {}, makerUser) => {
 };
 
 /**
- * Maker corrects a rejected project and sends it back to the Checker.
+ * HQ Maker corrects a project returned with an objection and sends it back to the Checker.
  * The Project ID is kept, so the district (encoded in the ID) cannot change.
  */
 export const resubmitRejectedProject = async (projectDbId, data = {}, makerUser) => {
@@ -427,7 +430,9 @@ export const resubmitRejectedProject = async (projectDbId, data = {}, makerUser)
     action: 'RESUBMITTED',
     performedBy: makerUser._id,
     performedAt: now,
-    note: note || `Corrected and resubmitted${previousReason ? ` after rejection: ${previousReason}` : ''}`,
+    role: actorLabel(makerUser),
+    designation: designationOf(makerUser),
+    note: note || `Corrected and resubmitted${previousReason ? ` after objection: ${previousReason}` : ''}`,
   });
   await project.save();
   return project;

@@ -2,7 +2,17 @@ import User from '../models/User.model.js';
 import ProjectSanction from '../models/ProjectSanction.model.js';
 import { createBusinessNotification } from './notification.service.js';
 import { sendWorkflowEmail } from '../utils/email/workflowEmails.js';
-import USER_ROLES from '../constants/roles.constants.js';
+import USER_ROLES, { TIERS, WORKFLOW_ROLES } from '../constants/roles.constants.js';
+import { actorLabel, tierRoleQuery } from '../utils/access.js';
+import { REVIEW_STAGES, stageOwner, statusLabel } from './mprWorkflow.js';
+
+/**
+ * In-app and e-mail notifications of the workflow. Every event goes to the
+ * users who hold the next step, so a pending action always reaches the next
+ * authorised person (the workflow engine's automatic forwarding).
+ */
+
+const { MAKER, CHECKER, APPROVER } = WORKFLOW_ROLES;
 
 const getFrontendUrl = () =>
   (process.env.FRONTEND_URL || process.env.CRM_URL || 'http://localhost:3000').replace(/\/$/, '');
@@ -21,6 +31,14 @@ const projectPathForRole = (role, projectId) => {
   return `/dashboard/admin/projects/${projectId}`;
 };
 
+/** Where a project MPR opens for each role. */
+export const projectMprPathForRole = (role, mprId) => {
+  if (role === USER_ROLES.PIA_OFFICER) return `/dashboard/officer/mprs/report/${mprId}`;
+  if (role === USER_ROLES.DD_LEVEL) return `/dashboard/dd/mpr-review/project/${mprId}`;
+  if (role === USER_ROLES.MND_SUPER_ADMIN) return `/dashboard/mnd-admin/mpr/project/${mprId}`;
+  return `/dashboard/admin/projects/mpr/${mprId}`;
+};
+
 const mprPathForRole = (role, formKey, mprId) => {
   if (formKey === 'abstract55') {
     return role === USER_ROLES.MND_SUPER_ADMIN ? `/dashboard/mnd-admin/mpr/${mprId}` : '/dashboard/mnd/abstract55';
@@ -33,16 +51,20 @@ const mprPathForRole = (role, formKey, mprId) => {
 
 export const activeUserQuery = { isActive: true, accountStatus: { $ne: 'DEACTIVATED' } };
 
-const compactRole = (user) => user?.workflowRole || user?.role || 'System';
+const compactRole = (user) => (user ? actorLabel(user) : 'System');
 const referenceForProject = (project) => project?.sanctionId || project?.projectId || project?.dprApplicationNo || 'Sanction ID pending';
 const referenceForMpr = (mpr) => mpr?.applicationNo || 'MPR reference pending';
 
+/**
+ * Notify users in-app and by e-mail. `payload.link` is the page to open; with
+ * `payload.linkFor(recipient)` each recipient gets the page of their own role.
+ */
 export const safeNotify = async (recipients, payload) => {
   const users = (Array.isArray(recipients) ? recipients : [recipients]).filter(Boolean);
   const frontendUrl = getFrontendUrl();
 
   await Promise.all(users.map(async (recipient) => {
-    const link = payload.link || dashboardPathForRole(recipient.role);
+    const link = payload.linkFor?.(recipient) || payload.link || dashboardPathForRole(recipient.role);
 
     try {
       await createBusinessNotification({
@@ -85,164 +107,137 @@ export const safeNotify = async (recipients, payload) => {
   }));
 };
 
+const usersOf = (tier, role, scope) => User.find(tierRoleQuery(tier, role, scope));
+
+// ─── Project workflow ────────────────────────────────────────────────────────
+
+/** Who receives each project event, and what they are told. */
+const PROJECT_EVENTS = {
+  PROJECT_SUBMITTED: {
+    to: () => usersOf(TIERS.HQ, CHECKER),
+    title: (ref) => `${ref} requires HQ Checker verification`,
+    message: (p, actor) => `${p.projectTitle || 'A project'} was submitted by ${actor} and is awaiting verification of its DPR, targets and financial allocation.`,
+    email: 'A project has been submitted by the HQ Maker and is awaiting your verification. Please verify the DPR, project details, physical and financial targets, or return it to the Maker with your objection.',
+    subject: 'Action Required: SARRA Project Awaiting Verification',
+    priority: 'HIGH', cta: 'Verify Project',
+  },
+  PROJECT_CHECKED: {
+    to: () => usersOf(TIERS.HQ, APPROVER),
+    title: (ref) => `${ref} is ready for sanction`,
+    message: (p, actor) => `${p.projectTitle || 'A project'} was verified by ${actor} and is awaiting your approval and Sanction Order.`,
+    email: 'The project has been verified by the HQ Checker. Please review it and approve it with the Sanction Order, or return it to the Maker.',
+    subject: 'Approval Required: SARRA Project Ready for Sanction',
+    priority: 'HIGH', cta: 'Review Project',
+  },
+  PROJECT_APPROVED: {
+    to: (p) => User.find({ ...activeUserQuery, _id: p.makerUserId }),
+    title: (ref) => `Project sanctioned: ${ref}`,
+    message: (p, actor) => `${p.projectTitle || 'The project'} was sanctioned by ${actor}. Forward it to ${p.district} district.`,
+    email: 'Your project has been sanctioned and its Sanction ID issued. Please forward it to the concerned District SARRA Centre.',
+    subject: (ref) => `Project Sanctioned: ${ref}`,
+    priority: 'HIGH', cta: 'Forward to District',
+  },
+  PROJECT_REJECTED: {
+    to: (p) => User.find({ ...activeUserQuery, _id: p.makerUserId }),
+    title: (ref) => `${ref} was returned with an objection`,
+    message: (p, actor, note) => `${p.projectTitle || 'The project'} was returned by ${actor}: ${note || p.rejectionReason || 'please review the remarks'}.`,
+    email: 'Your project has been returned with an objection. Please open it, read the remarks, correct it and resubmit it under the same Project ID.',
+    subject: (ref) => `Project Returned: ${ref}`,
+    priority: 'HIGH', cta: 'Correct Project',
+  },
+  PROJECT_FORWARDED_DISTRICT: {
+    to: (p) => usersOf(TIERS.DISTRICT, MAKER, { district: p.district }),
+    title: (ref, p) => `${ref} forwarded to ${p.district} district`,
+    message: (p) => `${p.projectTitle || 'A sanctioned project'} has been forwarded to your district for acceptance, PIA assignment and reporting responsibility.`,
+    email: 'A sanctioned project has been forwarded to your District SARRA Centre. Please accept it, assign the PIA and the District Technical Staff, and set the MPR reporting responsibility.',
+    subject: 'Action Required: SARRA Project Forwarded to Your District',
+    priority: 'HIGH', cta: 'Accept Project',
+  },
+  PROJECT_DISTRICT_ACCEPTED: {
+    to: (p) => User.find({ ...activeUserQuery, _id: p.makerUserId }),
+    title: (ref) => `${ref} accepted by district`,
+    message: (p, actor) => `${p.projectTitle || 'The project'} was accepted by ${actor}. The district is assigning the PIA.`,
+    email: 'The district has accepted your project and will now assign the PIA and the reporting responsibility.',
+    subject: (ref) => `District Accepted Project: ${ref}`,
+    priority: 'NORMAL', cta: 'Open Project',
+  },
+  PROJECT_FORWARDED_PIA: {
+    to: (p, ids) => (ids?.length ? User.find({ ...activeUserQuery, _id: { $in: ids } }) : User.find({ ...activeUserQuery, _id: p.forwardedToPIA })),
+    title: (ref) => `${ref} assigned to you`,
+    message: (p) => `${p.projectTitle || 'A project'} has been assigned to you as PIA Maker. Accept it to start implementation and monthly reporting.`,
+    email: 'A project has been assigned to you by the District SARRA Centre. Please open it and accept it to start implementation.',
+    subject: 'Action Required: New SARRA Project Assigned to You',
+    priority: 'HIGH', cta: 'Accept Project',
+  },
+  REPORTING_ASSIGNED: {
+    to: (p, ids) => User.find({ ...activeUserQuery, _id: { $in: ids || [] } }),
+    title: (ref) => `${ref}: you are the District Technical Staff`,
+    message: (p) => `You have been mapped as District Technical Staff for ${p.projectTitle || 'a project'}. Where the district holds the reporting responsibility, you prepare its monthly progress report.`,
+    email: 'You have been mapped as District Technical Staff to a project. Where the district holds the reporting responsibility, you prepare and submit its monthly progress reports to the District Checker.',
+    subject: 'SARRA: Reporting Responsibility Assigned',
+    priority: 'NORMAL', cta: 'Open Project',
+  },
+  PROJECT_PIA_ACCEPTED: {
+    to: (p) => usersOf(TIERS.DISTRICT, MAKER, { district: p.district }),
+    title: (ref) => `${ref} accepted by the PIA`,
+    message: (p, actor) => `${actor} accepted ${p.projectTitle || 'the project'}. Implementation has begun.`,
+    email: 'The PIA has accepted the project and implementation has begun.',
+    subject: (ref) => `PIA Accepted Project: ${ref}`,
+    priority: 'NORMAL', cta: 'Open Project',
+  },
+  REVISION_SUBMITTED: {
+    to: () => usersOf(TIERS.HQ, CHECKER),
+    title: (ref) => `${ref}: target revision to verify`,
+    message: (p, actor) => `${actor} proposed a target revision for ${p.projectTitle || 'a project'}.`,
+    email: 'A target revision has been proposed and is awaiting your verification.',
+    subject: 'Action Required: Target Revision Awaiting Verification',
+    priority: 'HIGH', cta: 'Review Revision',
+  },
+  REVISION_CHECKED: {
+    to: () => usersOf(TIERS.HQ, APPROVER),
+    title: (ref) => `${ref}: target revision to approve`,
+    message: (p, actor) => `A target revision of ${p.projectTitle || 'a project'} was verified by ${actor}.`,
+    email: 'A target revision has been verified and is awaiting your approval.',
+    subject: 'Approval Required: Target Revision',
+    priority: 'HIGH', cta: 'Review Revision',
+  },
+  REVISION_DECIDED: {
+    to: () => usersOf(TIERS.HQ, MAKER),
+    title: (ref) => `${ref}: target revision decided`,
+    message: (p, actor, note) => `The target revision of ${p.projectTitle || 'the project'} was decided by ${actor}${note ? `: ${note}` : ''}.`,
+    email: 'A target revision you are following has been decided. Open the project to see the outcome.',
+    subject: 'SARRA: Target Revision Decided',
+    priority: 'NORMAL', cta: 'Open Project',
+  },
+};
+
 export const notifyProjectWorkflow = async ({ project, actor, event, note, recipientIds }) => {
-  if (!project) return;
-  const eventDate = new Date();
-  const projectId = project._id;
+  const config = PROJECT_EVENTS[event];
+  if (!project || !config) return;
   const referenceNo = referenceForProject(project);
   const actorName = actor?.name || 'SARRA CRM';
-  const actorRole = compactRole(actor);
-  const projectTitle = project.projectTitle || referenceNo;
-
-  if (event === 'PROJECT_SUBMITTED') {
-    const checkers = await User.find({
-      ...activeUserQuery,
-      role: USER_ROLES.SUPER_ADMIN,
-      workflowRole: 'CHECKER'
-    });
-    return safeNotify(checkers, {
-      title: `${referenceNo} requires checker review`,
-      message: `${projectTitle} has been submitted by ${actorName} and is awaiting checker verification.`,
-      emailDescription: 'A new project has been submitted by the Maker and is now awaiting your review. Please open the project to review the submitted information and complete your assigned action.',
-      subject: 'Action Required: New SARRA Project Awaiting Your Review',
-      referenceNo,
-      projectTitle,
-      actorName,
-      actorRole,
-      status: project.status,
-      eventDate,
-      relatedResource: 'ProjectSanction',
-      relatedId: projectId,
-      priority: 'HIGH',
-      primaryLabel: 'Review Project',
-      link: `/dashboard/admin/projects/${projectId}`
-    });
-  }
-
-  if (event === 'PROJECT_CHECKED') {
-    const approvers = await User.find({
-      ...activeUserQuery,
-      role: USER_ROLES.SUPER_ADMIN,
-      workflowRole: 'APPROVER'
-    });
-    return safeNotify(approvers, {
-      title: `${referenceNo} is ready for approval`,
-      message: `${projectTitle} has been checked by ${actorName} and is waiting for approver action.`,
-      emailDescription: 'The project has been checked and forwarded to you for approval. Please review the project details and complete the approval action.',
-      subject: 'Approval Required: SARRA Project Ready for Approval',
-      referenceNo,
-      projectTitle,
-      actorName,
-      actorRole,
-      status: project.status,
-      eventDate,
-      relatedResource: 'ProjectSanction',
-      relatedId: projectId,
-      priority: 'HIGH',
-      primaryLabel: 'Review Project',
-      link: `/dashboard/admin/projects/${projectId}`
-    });
-  }
-
-  if (event === 'PROJECT_APPROVED' || event === 'PROJECT_REJECTED') {
-    const maker = await User.findById(project.makerUserId);
-    const rejected = event === 'PROJECT_REJECTED';
-    return safeNotify(maker, {
-      title: rejected ? `${referenceNo} was returned for correction` : `Project approved: ${referenceNo}`,
-      message: rejected
-        ? `${projectTitle} was returned by ${actorName}. ${note || project.rejectionReason || 'Please review the remarks and take corrective action.'}`
-        : `${projectTitle} has been approved by ${actorName}. You can continue with the next required workflow step.`,
-      emailDescription: rejected
-        ? 'Your project has been returned for correction. Please open the project, review the remarks, and submit the required changes according to the workflow.'
-        : 'Your project has been approved by the Approver. You can open the project to review its current status and continue with the next required step.',
-      subject: rejected ? `Project Returned: ${referenceNo}` : `Project Approved: ${referenceNo}`,
-      referenceNo,
-      projectTitle,
-      actorName,
-      actorRole,
-      status: project.status,
-      eventDate,
-      relatedResource: 'ProjectSanction',
-      relatedId: projectId,
-      priority: rejected ? 'HIGH' : 'NORMAL',
-      primaryLabel: 'Open Project',
-      link: `/dashboard/admin/projects/${projectId}`
-    });
-  }
-
-  if (event === 'PROJECT_FORWARDED_DISTRICT') {
-    const districtUsers = await User.find({
-      ...activeUserQuery,
-      role: USER_ROLES.DD_LEVEL,
-      district: project.district
-    });
-    return safeNotify(districtUsers, {
-      title: `${referenceNo} assigned to ${project.district} district`,
-      message: `${projectTitle} has been forwarded to your district for acceptance and PIA assignment.`,
-      emailDescription: 'A sanctioned project has been forwarded to your district. Please review the project, confirm district acceptance, and continue the assignment workflow.',
-      subject: 'Action Required: SARRA Project Forwarded to Your District',
-      referenceNo,
-      projectTitle,
-      actorName,
-      actorRole,
-      status: project.status,
-      eventDate,
-      relatedResource: 'ProjectSanction',
-      relatedId: projectId,
-      priority: 'HIGH',
-      primaryLabel: 'Review Project',
-      link: `/dashboard/dd/projects/${projectId}`
-    });
-  }
-
-  if (event === 'PROJECT_FORWARDED_PIA') {
-    // Department-wise projects name the officers just assigned; older projects have a single PIA.
-    const pia = Array.isArray(recipientIds) && recipientIds.length
-      ? await User.find({ ...activeUserQuery, _id: { $in: recipientIds } })
-      : await User.findById(project.forwardedToPIA);
-    return safeNotify(pia, {
-      title: `${referenceNo} assigned for PIA acceptance`,
-      message: `${projectTitle} has been assigned to you. Please accept the project to activate MPR submission.`,
-      emailDescription: 'A project has been assigned to you by the district office. Please open the project and accept it to activate monthly progress reporting.',
-      subject: 'Action Required: New SARRA Project Assigned to You',
-      referenceNo,
-      projectTitle,
-      actorName,
-      actorRole,
-      status: project.status,
-      eventDate,
-      relatedResource: 'ProjectSanction',
-      relatedId: projectId,
-      priority: 'HIGH',
-      primaryLabel: 'Accept Project',
-      link: `/dashboard/officer/projects/${projectId}`
-    });
-  }
-
-  if (event === 'PROJECT_DISTRICT_ACCEPTED') {
-    const makers = await User.find({
-      ...activeUserQuery,
-      _id: project.makerUserId
-    });
-    return safeNotify(makers, {
-      title: `${referenceNo} accepted by district`,
-      message: `${projectTitle} was accepted by ${actorName}. Please forward it to the assigned PIA when ready.`,
-      emailDescription: 'The district has accepted your project. Please open the project and complete the next workflow action by forwarding it to the appropriate PIA.',
-      subject: `District Accepted Project: ${referenceNo}`,
-      referenceNo,
-      projectTitle,
-      actorName,
-      actorRole,
-      status: project.status,
-      eventDate,
-      relatedResource: 'ProjectSanction',
-      relatedId: projectId,
-      priority: 'NORMAL',
-      primaryLabel: 'Open Project',
-      link: `/dashboard/admin/projects/${projectId}`
-    });
-  }
+  const pick = (value) => (typeof value === 'function' ? value(referenceNo, project) : value);
+  const recipients = await config.to(project, recipientIds);
+  await safeNotify(recipients, {
+    title: config.title(referenceNo, project),
+    message: config.message(project, actorName, note),
+    emailDescription: config.email,
+    subject: pick(config.subject),
+    referenceNo,
+    projectTitle: project.projectTitle || referenceNo,
+    actorName,
+    actorRole: compactRole(actor),
+    status: project.status,
+    eventDate: new Date(),
+    relatedResource: 'ProjectSanction',
+    relatedId: project._id,
+    priority: config.priority,
+    primaryLabel: config.cta,
+    linkFor: (recipient) => projectPathForRole(recipient.role, project._id),
+  });
 };
+
+// ─── Legacy Praroop MPR forms ────────────────────────────────────────────────
 
 export const notifyMprWorkflow = async ({ mpr, actor, event, formKey, formLabel }) => {
   if (!mpr) return;
@@ -333,13 +328,23 @@ export const notifyMprWorkflow = async ({ mpr, actor, event, formKey, formLabel 
 export const getProjectForNotification = async (projectId) =>
   ProjectSanction.findById(projectId);
 
+// ─── Project MPRs ────────────────────────────────────────────────────────────
+
+/** Users who hold the review step a report is now at. */
+export const stageRecipients = (mpr) => {
+  const stage = REVIEW_STAGES[mpr.status];
+  if (!stage) return Promise.resolve([]);
+  const scope = stage.tier === TIERS.HQ ? {} : { district: mpr.district, ...(stage.tier === TIERS.PIA ? { department: mpr.departmentName } : {}) };
+  return User.find({ ...tierRoleQuery(stage.tier, stage.role, scope), _id: { $ne: mpr.submittedBy } });
+};
+
 /**
  * Notifications for project Monthly Progress Reports (ProjectMPR).
- * SUBMITTED / RESUBMITTED go to the District Directors of the project's
- * district; APPROVED / RETURNED go back to the PIA officer who filed it.
+ *   SUBMITTED / RESUBMITTED / FORWARDED   to the users of the next review step
+ *   RETURNED / REJECTED / VERIFIED        to the reporting Maker
  */
 export const notifyProjectMpr = async ({ mpr, actor, event }) => {
-  if (!mpr) return;
+  if (!mpr) return undefined;
   const period = `${mpr.reportingMonth} ${mpr.financialYear}`;
   const common = {
     referenceNo: mpr.mprNo,
@@ -350,67 +355,55 @@ export const notifyProjectMpr = async ({ mpr, actor, event }) => {
     eventDate: new Date(),
     relatedResource: 'ProjectMPR',
     relatedId: mpr._id,
+    linkFor: (recipient) => projectMprPathForRole(recipient.role, mpr._id),
   };
 
-  if (event === 'SUBMITTED' || event === 'RESUBMITTED') {
-    const directors = await User.find({ ...activeUserQuery, role: USER_ROLES.DD_LEVEL, district: mpr.district });
-    return safeNotify(directors, {
+  if (['SUBMITTED', 'RESUBMITTED', 'FORWARDED'].includes(event)) {
+    const owner = stageOwner(mpr.status);
+    const verb = { SUBMITTED: 'submitted', RESUBMITTED: 'corrected and resubmitted', FORWARDED: 'forwarded' }[event];
+    return safeNotify(await stageRecipients(mpr), {
       ...common,
-      title: `${mpr.mprNo} ${event === 'RESUBMITTED' ? 'resubmitted' : 'submitted'} for review`,
-      message: `${mpr.departmentName} progress report for ${period} (${mpr.projectCode}) was ${event === 'RESUBMITTED' ? 'corrected and resubmitted' : 'submitted'} by ${common.actorName}.`,
-      emailDescription: 'A monthly progress report has been submitted and is awaiting your review. Please open the report, review the progress, and approve it or return it for correction.',
-      subject: 'Action Required: SARRA MPR Awaiting Review',
+      title: `${mpr.mprNo} awaits ${owner} action`,
+      message: `${mpr.departmentName} progress report for ${period} (${mpr.projectCode}, ${mpr.district}) was ${verb} by ${common.actorName} (${common.actorRole}). Status: ${statusLabel(mpr.status)}.`,
+      emailDescription: `A monthly progress report is waiting for your action as ${owner}. Please open it, check the physical and financial progress and the evidence, then forward it or return it to its Maker with remarks.`,
+      subject: `Action Required: SARRA MPR Pending ${owner}`,
       priority: 'HIGH',
       primaryLabel: 'Review MPR',
-      link: `/dashboard/dd/mpr-review/project/${mpr._id}`,
     });
   }
 
+  const maker = await User.findById(mpr.submittedBy);
+  if (event === 'RETURNED') {
+    return safeNotify(maker, {
+      ...common,
+      title: `${mpr.mprNo} returned for correction`,
+      message: `Your ${period} progress report for ${mpr.departmentName} was returned by ${common.actorName} (${mpr.returnedByRole || common.actorRole}): ${mpr.returnReason || 'please review the remarks'}.`,
+      emailDescription: 'Your monthly progress report has been returned for correction. Please open the report, read the remarks, correct it and resubmit it through the approval chain.',
+      subject: `MPR Returned for Correction: ${mpr.mprNo}`,
+      priority: 'HIGH',
+      primaryLabel: 'Correct MPR',
+    });
+  }
+  if (event === 'REJECTED') {
+    return safeNotify(maker, {
+      ...common,
+      title: `${mpr.mprNo} rejected`,
+      message: `Your ${period} progress report for ${mpr.departmentName} was rejected by ${common.actorName} (${mpr.rejectedByRole || common.actorRole}): ${mpr.rejectionReason || ''}. The month can be reported again.`,
+      emailDescription: 'Your monthly progress report has been rejected with a recorded reason. A fresh report can be filed for the same month.',
+      subject: `MPR Rejected: ${mpr.mprNo}`,
+      priority: 'HIGH',
+      primaryLabel: 'Open MPR',
+    });
+  }
   if (event === 'VERIFIED') {
-    const submitter = await User.findById(mpr.submittedBy);
-    return safeNotify(submitter, {
+    return safeNotify(maker, {
       ...common,
       title: `${mpr.mprNo} verified by State`,
-      message: `Your ${period} progress report for ${mpr.departmentName} was verified by ${common.actorName}.`,
-      emailDescription: 'Your monthly progress report has been verified at State level.',
+      message: `Your ${period} progress report for ${mpr.departmentName} received final approval from ${common.actorName}.`,
+      emailDescription: 'Your monthly progress report has been verified at State level and is now part of the consolidated State dashboard.',
       subject: `MPR Verified by State: ${mpr.mprNo}`,
       priority: 'NORMAL',
       primaryLabel: 'Open MPR',
-      link: `/dashboard/officer/mprs/report/${mpr._id}`,
-    });
-  }
-
-  if (event === 'APPROVED') {
-    // District approval also puts the report in the M&E admin's queue for State verification.
-    const admins = await User.find({ ...activeUserQuery, role: USER_ROLES.MND_SUPER_ADMIN });
-    await safeNotify(admins, {
-      ...common,
-      title: `${mpr.mprNo} ready for State verification`,
-      message: `${mpr.departmentName} progress report for ${period} (${mpr.projectCode}) was approved by ${mpr.district} district.`,
-      emailDescription: 'A monthly progress report has been approved at district level and is ready for State verification.',
-      subject: 'MPR Ready for State Verification',
-      priority: 'NORMAL',
-      primaryLabel: 'Verify MPR',
-      link: `/dashboard/mnd-admin/mpr/project/${mpr._id}`,
-    });
-  }
-
-  if (event === 'APPROVED' || event === 'RETURNED') {
-    const returned = event === 'RETURNED';
-    const submitter = await User.findById(mpr.submittedBy);
-    return safeNotify(submitter, {
-      ...common,
-      title: returned ? `${mpr.mprNo} returned for correction` : `${mpr.mprNo} approved by district`,
-      message: returned
-        ? `Your ${period} progress report for ${mpr.departmentName} was returned by ${common.actorName}: ${mpr.returnReason || 'please review the remarks'}.`
-        : `Your ${period} progress report for ${mpr.departmentName} was approved by ${common.actorName}.`,
-      emailDescription: returned
-        ? 'Your monthly progress report has been returned for correction. Please open the report, read the remarks, correct the figures and resubmit.'
-        : 'Your monthly progress report has been approved at district level.',
-      subject: returned ? `MPR Returned for Correction: ${mpr.mprNo}` : `MPR Approved: ${mpr.mprNo}`,
-      priority: returned ? 'HIGH' : 'NORMAL',
-      primaryLabel: 'Open MPR',
-      link: `/dashboard/officer/mprs/report/${mpr._id}`,
     });
   }
   return undefined;
