@@ -14,6 +14,7 @@ import masterDataRoutes from './masterData.routes.js';
 import projectMprRoutes from './projectMpr.routes.js';
 import projectLifecycleRoutes from './projectLifecycle.routes.js';
 import monitoringRoutes from './monitoring.routes.js';
+import head56Routes from './head56.routes.js';
 import { apiLimiter } from '../middlewares/rateLimiter.middleware.js';
 import ApiResponse from '../utils/ApiResponse.js';
 import { HTTP_STATUS } from '../constants/http.constants.js';
@@ -42,5 +43,6 @@ router.use('/notifications', notificationRoutes);
 router.use('/master', masterDataRoutes);
 router.use('/project-mprs', projectMprRoutes);
 router.use('/monitoring', monitoringRoutes);
+router.use('/head56', head56Routes);
 
 export default router;

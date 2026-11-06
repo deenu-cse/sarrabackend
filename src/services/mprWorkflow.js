@@ -78,8 +78,17 @@ export const statusQuery = (value) => {
   return { status: statuses.length === 1 ? statuses[0] : { $in: statuses } };
 };
 
-/** First review stage after the Maker submits. District-entered reports skip the PIA stages. */
-export const firstStageOf = (entryMode) => (entryMode === MPR_ENTRY_MODE.DISTRICT ? S.PENDING_DISTRICT_CHECKER : S.PENDING_PIA_CHECKER);
+/**
+ * Where a report enters the chain. Project MPRs are entered by the PIA or by District
+ * Technical Staff; Head 56 reports can also be entered at SARRA HQ for its own expenditure.
+ */
+export const ENTRY_HQ = 'HQ';
+
+/** First review stage after the Maker submits. District-entered reports skip the PIA stages; HQ-entered ones start at the HQ Checker. */
+export const firstStageOf = (entryMode) => {
+  if (entryMode === ENTRY_HQ) return S.PENDING_HQ_CHECKER;
+  return entryMode === MPR_ENTRY_MODE.DISTRICT ? S.PENDING_DISTRICT_CHECKER : S.PENDING_PIA_CHECKER;
+};
 
 export const stageOwner = (status) => {
   const stage = REVIEW_STAGES[status];
@@ -90,20 +99,35 @@ export const statusLabel = (status) => MPR_STATUS_LABELS[status] || status;
 
 const PIA_CHAIN = [S.PENDING_PIA_CHECKER, S.PENDING_PIA_APPROVER, ...AT_DISTRICT, ...AT_HQ];
 const DISTRICT_CHAIN = [S.PENDING_DISTRICT_CHECKER, S.PENDING_DISTRICT_APPROVER, ...AT_HQ];
+const HQ_CHAIN = [S.PENDING_HQ_CHECKER, S.PENDING_HQ_APPROVER];
+
+/** Review stages a report of this entry mode passes through, in order. */
+export const stagesOf = (entryMode) => {
+  if (entryMode === ENTRY_HQ) return HQ_CHAIN;
+  return entryMode === MPR_ENTRY_MODE.DISTRICT ? DISTRICT_CHAIN : PIA_CHAIN;
+};
+
+const MAKER_STEP = {
+  [MPR_ENTRY_MODE.PIA]: { label: 'PIA Maker — entry', tier: TIERS.PIA },
+  [MPR_ENTRY_MODE.DISTRICT]: { label: 'District Maker (Technical Staff) — entry', tier: TIERS.DISTRICT },
+  [ENTRY_HQ]: { label: 'HQ Maker — entry', tier: TIERS.HQ },
+};
 
 /**
  * The whole chain of a report, step by step, with who took each step in the
- * current cycle. `state` is done / current / upcoming.
+ * current cycle. `state` is done / current / upcoming. `labels` can rename steps
+ * (by status, or MAKER) for a report type whose steps are called differently.
  */
-export const chainOf = (mpr, nameOf = () => null) => {
+export const chainOf = (mpr, nameOf = () => null, labels = {}) => {
   const entryMode = mpr.entryMode || MPR_ENTRY_MODE.PIA;
-  const stages = entryMode === MPR_ENTRY_MODE.DISTRICT ? DISTRICT_CHAIN : PIA_CHAIN;
+  const stages = stagesOf(entryMode);
   const position = stages.indexOf(mpr.status);
   const verified = mpr.status === S.VERIFIED_BY_STATE;
+  const makerStep = MAKER_STEP[entryMode] || MAKER_STEP[MPR_ENTRY_MODE.PIA];
   const maker = {
     key: 'MAKER',
-    label: entryMode === MPR_ENTRY_MODE.DISTRICT ? 'District Maker (Technical Staff) — entry' : 'PIA Maker — entry',
-    tier: entryMode === MPR_ENTRY_MODE.DISTRICT ? TIERS.DISTRICT : TIERS.PIA,
+    label: labels.MAKER || makerStep.label,
+    tier: makerStep.tier,
     state: mpr.status === S.DRAFT || mpr.status === S.RETURNED_FOR_CORRECTION ? 'current' : 'done',
     by: mpr.submittedAt ? nameOf(mpr.submittedBy) : null,
     at: mpr.submittedAt || null,
@@ -116,7 +140,7 @@ export const chainOf = (mpr, nameOf = () => null) => {
     else if (index === position) state = 'current';
     return {
       key: status,
-      label: roleLabel(stage.tier, stage.role),
+      label: labels[status] || roleLabel(stage.tier, stage.role),
       tier: stage.tier,
       state,
       by: step?.by ? nameOf(step.by) : null,

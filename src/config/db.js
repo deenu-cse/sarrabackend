@@ -2,6 +2,7 @@ import mongoose from 'mongoose';
 import logger from './logger.js';
 import { seedMasterData } from '../services/masterData.service.js';
 import { seedOutcomeIndicators } from '../services/projectOutcome.service.js';
+import { seedHead56 } from '../services/head56Master.service.js';
 import { startScheduler } from '../services/monitoring.service.js';
 
 const connectDB = async () => {
@@ -27,6 +28,7 @@ const connectDB = async () => {
       // First-run seed of master data (no-op once the collections have data)
       await seedMasterData();
       await seedOutcomeIndicators();
+      await seedHead56();
       startScheduler();
 
       return conn;

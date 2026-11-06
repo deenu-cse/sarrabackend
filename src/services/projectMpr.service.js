@@ -215,7 +215,8 @@ const isReportingMaker = (project, mpr, user) => {
 
 // ─── Form (activities, targets, previous progress) ───────────────────────────
 
-const formTypeFor = (headCode) => (headCode === '55-04' ? MPR_FORM_TYPE.HEAD_55_4 : MPR_FORM_TYPE.HEAD_55_1_TO_3);
+const FORM_TYPE_OF_HEAD = { '55-04': MPR_FORM_TYPE.HEAD_55_4, '55-05': MPR_FORM_TYPE.HEAD_55_5 };
+const formTypeFor = (headCode) => FORM_TYPE_OF_HEAD[headCode] || MPR_FORM_TYPE.HEAD_55_1_TO_3;
 
 /** Every live (not rejected) report of one department, oldest first. */
 const loadChain = (projectId, departmentId, session) => {

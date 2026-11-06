@@ -61,6 +61,7 @@ export const MPR_ENTRY_MODE = { PIA: 'PIA', DISTRICT: 'DISTRICT' };
 export const MPR_FORM_TYPE = {
   HEAD_55_1_TO_3: '55-(1-3)',
   HEAD_55_4: '55(4)',
+  HEAD_55_5: '55(5)',
 };
 
 const activityProgressSchema = new mongoose.Schema({

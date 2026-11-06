@@ -90,6 +90,20 @@ const groundwaterActivities = (head) => [
   financialOnly(`${head}-ME`, 'Monitoring and Evaluation Cost', 'मूल्यांकन एवं अनुश्रवण पर व्यय'),
 ];
 
+// Head 55-05: pond and wetland rejuvenation (SARRA format Prarup-1, sheet "HEAD 55-05 FORMAT (PondWetland)").
+const pondActivities = (head) => [
+  financialOnly(head, 'Expenditure on Detailed Project Report', 'प्राथमिक / विस्तृत परियोजना रिपोर्ट पर व्यय'),
+  counted(`${head}(01)`, 'Pre-treatment and Inlet Structures', 'प्री ट्रीटमेंट और इनलेट संरचनाएँ'),
+  counted(`${head}(02)`, 'De-silting and Dredging', 'डी-सिल्टिंग और ड्रेजिंग करना'),
+  counted(`${head}(03)`, 'Grit Chamber / Screening', 'ग्रिट चेम्बर / स्क्रीनिंग'),
+  counted(`${head}(04)`, 'Sedimentation Tank / CW-NTS', 'अवसादन टैंक / CW-NTS'),
+  counted(`${head}(05)`, 'Repair and Strengthening of Embankments', 'तटबंधों की मरम्मत एवं सुदृढ़ीकरण / मजबूतीकरण'),
+  counted(`${head}(06)`, 'Outlet and Protection Structures', 'आउटलेट और सुरक्षा संरचनाएँ'),
+  counted(`${head}(07)`, 'Miscellaneous Works (Sign Boards, Safety Railing, Paver Blocks etc.)', 'विविध कार्य (साइन बोर्ड, सुरक्षा रेलिंग, पेवर ब्लॉक आदि)'),
+  area(`${head}(08)`, 'Plantation / Ecological Measures', 'वृक्षारोपण / पारिस्थितिक उपाय'),
+  financialOnly(`${head}-ME`, 'Monitoring and Evaluation Cost', 'मूल्यांकन एवं अनुश्रवण पर व्यय'),
+];
+
 const withOrder = (activities) => activities.map((a, i) => ({ ...a, sortOrder: i + 1, allowsZero: true, isActive: true }));
 
 export const SEED_HEADS = [
@@ -97,4 +111,5 @@ export const SEED_HEADS = [
   { code: '55-02', name: 'Rain-fed Stream / River Treatment', description: 'Streamshed treatment works', projectType: 'STREAMSHED', sortOrder: 2, activities: withOrder(treatmentActivities('55-02')) },
   { code: '55-03', name: 'Major River Treatment', description: 'Treatment works on major rivers', projectType: 'STREAMSHED', sortOrder: 3, activities: withOrder(treatmentActivities('55-03')) },
   { code: '55-04', name: 'Groundwater Recharge', description: 'Groundwater recharge works', projectType: 'GROUNDWATER', sortOrder: 4, activities: withOrder(groundwaterActivities('55-04')) },
+  { code: '55-05', name: 'Pond / Wetland Rejuvenation', description: 'Pond and wetland treatment works (तालाब / आर्द्रभूमि उपचार)', projectType: 'POND', sortOrder: 5, activities: withOrder(pondActivities('55-05')) },
 ];

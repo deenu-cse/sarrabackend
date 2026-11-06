@@ -94,14 +94,14 @@ const projectSanctionSchema = new mongoose.Schema({
   },
   dprType: {
     type: String,
-    enum: ['SPRINGSHED', 'STREAMSHED', 'GROUNDWATER'],
+    enum: ['SPRINGSHED', 'STREAMSHED', 'GROUNDWATER', 'POND'],
   },
   dprApplicationNo: {
     type: String,
   },
   projectType: {
     type: String,
-    enum: ['SPRINGSHED', 'STREAMSHED', 'GROUNDWATER'],
+    enum: ['SPRINGSHED', 'STREAMSHED', 'GROUNDWATER', 'POND'],
     required: true,
   },
 
