@@ -11,7 +11,17 @@ const STATUS_THEME = {
   PIA_ACCEPTED: ['#ecfdf5', '#a7f3d0', '#047857'],
   SUBMITTED: ['#eff6ff', '#bfdbfe', '#1d4ed8'],
   RETURNED_TO_PIA: ['#fff7ed', '#fed7aa', '#c2410c'],
-  REJECTED: ['#fef2f2', '#fecaca', '#b91c1c']
+  REJECTED: ['#fef2f2', '#fecaca', '#b91c1c'],
+  PENDING_PIA_CHECKER: ['#fff7ed', '#fed7aa', '#c2410c'],
+  PENDING_PIA_APPROVER: ['#fff7ed', '#fed7aa', '#c2410c'],
+  SUBMITTED_TO_DISTRICT: ['#eff6ff', '#bfdbfe', '#1d4ed8'],
+  PENDING_DISTRICT_CHECKER: ['#fff7ed', '#fed7aa', '#c2410c'],
+  PENDING_DISTRICT_APPROVER: ['#fff7ed', '#fed7aa', '#c2410c'],
+  SUBMITTED_TO_HQ: ['#eef2ff', '#c7d2fe', '#4338ca'],
+  PENDING_HQ_CHECKER: ['#fff7ed', '#fed7aa', '#c2410c'],
+  PENDING_HQ_APPROVER: ['#fff7ed', '#fed7aa', '#c2410c'],
+  VERIFIED_BY_STATE: ['#ecfdf5', '#a7f3d0', '#047857'],
+  RETURNED_FOR_CORRECTION: ['#fff7ed', '#fed7aa', '#c2410c']
 };
 
 const formatStatus = (status) => (status || 'Pending').replace(/_/g, ' ');

@@ -100,6 +100,17 @@ const userSchema = new mongoose.Schema(
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
     },
+    // Accounts requested by a tier Maker wait for that tier's Approver before the
+    // invitation goes out. Accounts without this record were created directly.
+    approval: {
+      status: { type: String, enum: ['PENDING', 'APPROVED', 'REJECTED'] },
+      tier: { type: String, enum: ['HQ', 'DISTRICT'] },
+      requestedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      requestedAt: Date,
+      decidedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+      decidedAt: Date,
+      note: { type: String, trim: true, maxlength: 500 },
+    },
     lastLogin: Date,
     loginAttempts: {
       type: Number,

@@ -23,7 +23,7 @@ const budgetHeadSchema = new mongoose.Schema({
   name: { type: String, required: true, trim: true },
   description: { type: String, trim: true },
   // Maps the Head onto the legacy project type used by the sanction workflow
-  projectType: { type: String, enum: ['SPRINGSHED', 'STREAMSHED', 'GROUNDWATER'], required: true },
+  projectType: { type: String, enum: ['SPRINGSHED', 'STREAMSHED', 'GROUNDWATER', 'POND'], required: true },
   sortOrder: { type: Number, default: 0 },
   isActive: { type: Boolean, default: true },
   activities: [headActivitySchema],

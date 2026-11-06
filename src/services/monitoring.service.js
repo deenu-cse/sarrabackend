@@ -1,12 +1,15 @@
-import ProjectSanction from '../models/ProjectSanction.model.js';
+import ProjectSanction, { REPORTING_MODE } from '../models/ProjectSanction.model.js';
 import ProjectMPR, { PROJECT_MPR_STATUS } from '../models/ProjectMPR.model.js';
 import User from '../models/User.model.js';
 import { SystemSettings, ReminderLog, ReportDispatch } from '../models/ProjectLifecycle.model.js';
-import { safeNotify, activeUserQuery } from './workflowNotification.service.js';
+import { safeNotify, activeUserQuery, stageRecipients, projectMprPathForRole } from './workflowNotification.service.js';
 import { buildRegisterWorkbook, formatMoney } from './mprDocuments.service.js';
+import { reportingMakerOf } from './projectMpr.service.js';
+import { AT_DISTRICT, AT_HQ, AT_PIA, IN_REVIEW, REVIEW_STAGES, canActOnStage, stageOwner } from './mprWorkflow.js';
 import { sendEmail } from '../utils/email/sendEmail.js';
 import { SANCTION_STATUS } from '../constants/status.constants.js';
-import USER_ROLES from '../constants/roles.constants.js';
+import USER_ROLES, { WORKFLOW_ROLES } from '../constants/roles.constants.js';
+import { sameText, workflowRoleOf } from '../utils/access.js';
 import ApiError from '../utils/ApiError.js';
 import { HTTP_STATUS } from '../constants/http.constants.js';
 import logger from '../config/logger.js';
@@ -125,14 +128,20 @@ export const updateSettings = async (body = {}, user) => {
   return settingsDto(settings);
 };
 
-// ─── What is due ─────────────────────────────────────────────────────────────
+/// ─── What is due ─────────────────────────────────────────────────────────────
 
 const REPORTING = [SANCTION_STATUS.FORWARDED_TO_PIA, SANCTION_STATUS.PIA_ACCEPTED];
 const completionFiled = (department) => ['SUBMITTED', 'DISTRICT_VERIFIED'].includes(department.completion?.status);
 
+/** From when a department owes reports: PIA acceptance, or the day the district took the reporting responsibility. */
+const reportingSince = (department) => (department.reportingMode === REPORTING_MODE.DISTRICT
+  ? (department.districtStaffUserId ? department.reportingAssignedAt || department.piaAssignedAt || null : null)
+  : department.piaAcceptedAt || null);
+
 /**
  * Every department that owes (or has filed) last month's report, plus reports
- * waiting for correction and for district review, within `projectFilter`.
+ * waiting for correction by their Maker and reports waiting at a review step,
+ * within `projectFilter`.
  */
 export const collectDeadlines = async (settings, projectFilter = {}, ownsDepartment = () => true, now = new Date()) => {
   const clock = istClock(now);
@@ -143,23 +152,25 @@ export const collectDeadlines = async (settings, projectFilter = {}, ownsDepartm
   const due = dueDayOf(period, mprDueDay);
 
   const projects = await ProjectSanction.find({ ...projectFilter, status: { $in: REPORTING }, 'closure.status': { $ne: 'CLOSED' } })
-    .select('projectId sanctionId projectTitle district departmentAllocations.departmentId departmentAllocations.departmentName departmentAllocations.piaUserId departmentAllocations.piaAcceptedAt departmentAllocations.completion')
+    .select('projectId sanctionId projectTitle district departmentAllocations.departmentId departmentAllocations.departmentName departmentAllocations.piaUserId departmentAllocations.piaAcceptedAt departmentAllocations.piaAssignedAt departmentAllocations.reportingMode departmentAllocations.districtStaffUserId departmentAllocations.reportingAssignedAt departmentAllocations.completion')
     .lean();
   const reports = projects.length
-    ? await ProjectMPR.find({ project: { $in: projects.map((p) => p._id) } })
-      .select('project departmentId periodIndex status mprNo submittedAt updatedAt departmentName projectCode projectTitle district returnedByLevel').lean()
+    ? await ProjectMPR.find({ project: { $in: projects.map((p) => p._id) }, status: { $ne: PROJECT_MPR_STATUS.REJECTED } })
+      .select('project departmentId periodIndex status entryMode mprNo submittedAt submittedBy updatedAt stageEnteredAt steps departmentName projectCode projectTitle district returnedByLevel returnedByRole').lean()
     : [];
-  const officerIds = [...new Set(projects.flatMap((p) => (p.departmentAllocations || []).map((d) => String(d.piaUserId || '')).filter(Boolean)))];
-  const officers = officerIds.length ? await User.find({ _id: { $in: officerIds } }).select('name email role isActive accountStatus').lean() : [];
+  const makerIds = [...new Set(projects.flatMap((p) => (p.departmentAllocations || []).map((d) => String(reportingMakerOf(d) || '')).filter(Boolean)))];
+  const officers = makerIds.length ? await User.find({ _id: { $in: makerIds } }).select('name email role isActive accountStatus').lean() : [];
   const officerById = new Map(officers.map((officer) => [String(officer._id), officer]));
 
   const items = [];
   const corrections = [];
   const reviews = [];
   projects.forEach((project) => (project.departmentAllocations || []).forEach((department) => {
-    if (!department.piaUserId || !department.piaAcceptedAt || !ownsDepartment(department)) return;
+    const makerId = reportingMakerOf(department);
+    const since = reportingSince(department);
+    if (!makerId || !since || !ownsDepartment(department, project)) return;
     const chain = reports.filter((r) => String(r.project) === String(project._id) && String(r.departmentId) === String(department.departmentId));
-    const officer = officerById.get(String(department.piaUserId));
+    const officer = officerById.get(String(makerId));
     const base = {
       projectId: String(project._id),
       projectCode: project.projectId || project.sanctionId || '',
@@ -167,22 +178,29 @@ export const collectDeadlines = async (settings, projectFilter = {}, ownsDepartm
       district: project.district,
       departmentId: String(department.departmentId),
       departmentName: department.departmentName,
+      reportingMode: department.reportingMode || REPORTING_MODE.PIA,
       officer: officer ? { id: String(officer._id), name: officer.name } : null,
     };
 
-    chain.filter((r) => r.status === PROJECT_MPR_STATUS.RETURNED_TO_PIA).forEach((r) => corrections.push({
-      ...base, mprId: String(r._id), mprNo: r.mprNo, period: periodLabel(r.periodIndex), returnedBy: r.returnedByLevel === 'STATE' ? 'State' : 'District',
-      daysPending: Math.max(0, Math.floor((today - dayStart(istClock(r.updatedAt))) / DAY)),
+    chain.filter((r) => r.status === PROJECT_MPR_STATUS.RETURNED_FOR_CORRECTION).forEach((r) => corrections.push({
+      ...base, mprId: String(r._id), mprNo: r.mprNo, period: periodLabel(r.periodIndex), returnedBy: r.returnedByRole || (r.returnedByLevel === 'STATE' ? 'HQ' : 'District'),
+      daysPending: Math.max(0, Math.floor((today - dayStart(istClock(r.stageEnteredAt || r.updatedAt))) / DAY)),
     }));
-    chain.filter((r) => r.status === PROJECT_MPR_STATUS.SUBMITTED).forEach((r) => {
-      const waiting = Math.max(0, Math.floor((today - dayStart(istClock(r.submittedAt || r.updatedAt))) / DAY));
-      reviews.push({ ...base, mprId: String(r._id), mprNo: r.mprNo, period: periodLabel(r.periodIndex), submittedAt: r.submittedAt, daysWaiting: waiting, overdue: waiting > districtReviewDays, stamp: new Date(r.submittedAt || r.updatedAt).getTime() });
+    chain.filter((r) => IN_REVIEW.includes(r.status)).forEach((r) => {
+      const entered = r.stageEnteredAt || r.submittedAt || r.updatedAt;
+      const waiting = Math.max(0, Math.floor((today - dayStart(istClock(entered))) / DAY));
+      reviews.push({
+        ...base, mprId: String(r._id), mprNo: r.mprNo, period: periodLabel(r.periodIndex), status: r.status, stage: stageOwner(r.status),
+        tier: REVIEW_STAGES[r.status].tier, submittedAt: r.submittedAt, daysWaiting: waiting, overdue: waiting > districtReviewDays,
+        stamp: new Date(entered).getTime(), report: r,
+      });
     });
 
     if (completionFiled(department)) return;
-    if (period < periodOfDate(department.piaAcceptedAt)) return; // accepted this month: nothing was owed for last month
-    const filed = chain.find((r) => r.periodIndex === period);
-    const latest = chain.reduce((max, r) => Math.max(max, r.periodIndex), -1);
+    if (period < periodOfDate(since)) return; // took up reporting this month: nothing was owed for last month
+    const filed = chain.find((r) => r.periodIndex === period && r.status !== PROJECT_MPR_STATUS.DRAFT);
+    const draft = chain.find((r) => r.periodIndex === period && r.status === PROJECT_MPR_STATUS.DRAFT);
+    const latest = chain.filter((r) => r.status !== PROJECT_MPR_STATUS.DRAFT).reduce((max, r) => Math.max(max, r.periodIndex), -1);
     let state;
     if (filed) state = 'FILED';
     else if (latest > period) state = 'SKIPPED'; // a later month is filed, so this one can no longer be reported
@@ -198,10 +216,11 @@ export const collectDeadlines = async (settings, projectFilter = {}, ownsDepartm
       state,
       daysOverdue: state === 'OVERDUE' ? Math.floor((today - due) / DAY) : 0,
       daysLeft: state === 'DUE' || state === 'DUE_SOON' ? Math.floor((due - today) / DAY) : 0,
-      mprId: filed ? String(filed._id) : null,
-      mprNo: filed?.mprNo || null,
-      mprStatus: filed?.status || null,
-      officerId: String(department.piaUserId),
+      mprId: filed ? String(filed._id) : (draft ? String(draft._id) : null),
+      mprNo: filed?.mprNo || draft?.mprNo || null,
+      mprStatus: filed?.status || draft?.status || null,
+      draft: Boolean(draft) && !filed,
+      officerId: String(makerId),
     });
   }));
 
@@ -212,14 +231,20 @@ export const collectDeadlines = async (settings, projectFilter = {}, ownsDepartm
   return { items, corrections, reviews, period, due, today, currentPeriod, officerById };
 };
 
-/** Deadlines as seen by the signed-in user: own departments, own district, or the whole State. */
+/** Deadlines as seen by the signed-in user: own departments, own PIA department, own district, or the whole State. */
 export const getDeadlines = async (user) => {
   const settings = await getSettings();
   let filter = {};
   let owns = () => true;
   if (user.role === USER_ROLES.PIA_OFFICER) {
-    filter = { 'departmentAllocations.piaUserId': user._id };
-    owns = (department) => String(department.piaUserId) === String(user._id);
+    if (workflowRoleOf(user) === WORKFLOW_ROLES.MAKER) {
+      filter = { 'departmentAllocations.piaUserId': user._id };
+      owns = (department) => String(reportingMakerOf(department) || '') === String(user._id);
+    } else {
+      if (!user.district) throw forbidden('Your account has no district.');
+      filter = { district: user.district };
+      owns = (department) => Boolean(department.piaUserId) && sameText(department.departmentName, user.department);
+    }
   } else if (user.role === USER_ROLES.DD_LEVEL) {
     if (!user.district) throw forbidden('Your account has no district.');
     filter = { district: user.district };
@@ -249,10 +274,11 @@ export const getDeadlines = async (user) => {
       corrections: corrections.length,
       reviewsWaiting: reviews.length,
       reviewsOverdue: reviews.filter((review) => review.overdue).length,
+      myActions: reviews.filter((review) => canActOnStage(user, review.report)).length,
     },
     items: items.map(({ officerId, ...item }) => item),
     corrections,
-    reviews: reviews.map(({ stamp, ...review }) => review),
+    reviews: reviews.map(({ stamp, report, ...review }) => ({ ...review, mine: canActOnStage(user, report) })),
     districts,
   };
 };
@@ -277,6 +303,8 @@ const reminderPayload = (extra) => ({
   ...extra,
 });
 
+const entryLink = (officer) => (officer?.role === USER_ROLES.DD_LEVEL ? '/dashboard/dd/mprs/new' : '/dashboard/officer/forms/new');
+
 /**
  * Send whatever reminders are due today. Safe to run any number of times:
  * each reminder is keyed by project, department, month and stage.
@@ -287,10 +315,10 @@ export const runReminders = async ({ now = new Date() } = {}) => {
   if (!settings.deadlines.remindersEnabled) return result;
   const { items, reviews, officerById } = await collect(settings, {}, () => true, now);
   const { escalateToDistrictAfterDays, escalateToStateAfterDays, districtReviewDays } = settings.deadlines;
-  const directorsOf = new Map();
-  const directors = async (district) => {
-    if (!directorsOf.has(district)) directorsOf.set(district, await User.find({ ...activeUserQuery, role: USER_ROLES.DD_LEVEL, district }));
-    return directorsOf.get(district);
+  const districtOf = new Map();
+  const districtUsers = async (district) => {
+    if (!districtOf.has(district)) districtOf.set(district, await User.find({ ...activeUserQuery, role: USER_ROLES.DD_LEVEL, district }));
+    return districtOf.get(district);
   };
   const dueText = (item) => new Date(`${item.dueDate}T00:00:00Z`).toLocaleDateString('en-GB', { timeZone: 'UTC', day: '2-digit', month: 'long', year: 'numeric' });
   const stateQueue = [];
@@ -305,12 +333,12 @@ export const runReminders = async ({ now = new Date() } = {}) => {
       await safeNotify(officer, reminderPayload({
         ...common,
         title: `${item.period} progress report due on ${dueText(item)}`,
-        message: `The ${item.period} report of ${item.departmentName} for ${item.projectCode} is due on ${dueText(item)}.`,
-        emailDescription: `The monthly progress report for ${item.period} has not been filed yet. Please submit it on or before ${dueText(item)}.`,
+        message: `The ${item.period} report of ${item.departmentName} for ${item.projectCode} is due on ${dueText(item)}.${item.draft ? ' A draft is saved; submit it.' : ''}`,
+        emailDescription: `The monthly progress report for ${item.period} has not been submitted yet. Please submit it on or before ${dueText(item)}.`,
         subject: `Reminder: ${item.period} MPR due on ${dueText(item)}`,
-        status: 'SUBMITTED',
+        status: 'DRAFT',
         primaryLabel: 'File Report',
-        link: '/dashboard/officer/forms/new',
+        link: entryLink(officer),
       }));
       result.dueSoon += 1;
     }
@@ -319,26 +347,26 @@ export const runReminders = async ({ now = new Date() } = {}) => {
         await safeNotify(officer, reminderPayload({
           ...common,
           title: `${item.period} progress report is overdue`,
-          message: `The ${item.period} report of ${item.departmentName} for ${item.projectCode} was due on ${dueText(item)} and has not been filed.`,
-          emailDescription: `The monthly progress report for ${item.period} was due on ${dueText(item)} and has not been filed. Please submit it today. The district will be informed if it stays pending.`,
+          message: `The ${item.period} report of ${item.departmentName} for ${item.projectCode} was due on ${dueText(item)} and has not been submitted.`,
+          emailDescription: `The monthly progress report for ${item.period} was due on ${dueText(item)} and has not been submitted. Please submit it today. The district will be informed if it stays pending.`,
           subject: `Overdue: ${item.period} MPR for ${item.projectCode}`,
-          status: 'RETURNED_TO_PIA',
+          status: 'RETURNED_FOR_CORRECTION',
           priority: 'HIGH',
           primaryLabel: 'File Report',
-          link: '/dashboard/officer/forms/new',
+          link: entryLink(officer),
         }));
         result.overdue += 1;
       }
       if (item.daysOverdue >= escalateToDistrictAfterDays) {
-        const list = await directors(item.district);
+        const list = await districtUsers(item.district);
         if (list.length && await claim(`district:${key}`, { ...fields, kind: 'ESCALATE_DISTRICT', recipients: list.length })) {
           await safeNotify(list, reminderPayload({
             ...common,
             title: `${item.projectCode}: ${item.period} report overdue by ${item.daysOverdue} days`,
-            message: `${item.departmentName}${item.officer ? ` (${item.officer.name})` : ''} has not filed the ${item.period} report, due on ${dueText(item)}.`,
-            emailDescription: `A monthly progress report in your district is overdue by ${item.daysOverdue} days. Please follow up with the PIA officer.`,
+            message: `${item.departmentName}${item.officer ? ` (${item.officer.name})` : ''} has not submitted the ${item.period} report, due on ${dueText(item)}.`,
+            emailDescription: `A monthly progress report in your district is overdue by ${item.daysOverdue} days. Please follow up with its reporting Maker.`,
             subject: `Overdue MPR in ${item.district}: ${item.projectCode}`,
-            status: 'RETURNED_TO_PIA',
+            status: 'RETURNED_FOR_CORRECTION',
             priority: 'HIGH',
             primaryLabel: 'Open Project',
             link: `/dashboard/dd/projects/${item.projectId}`,
@@ -353,43 +381,44 @@ export const runReminders = async ({ now = new Date() } = {}) => {
     /* eslint-enable no-await-in-loop */
   }
 
-  // The State gets one digest, not one message per report.
+  // HQ gets one digest, not one message per report.
   if (stateQueue.length) {
-    const admins = await User.find({ ...activeUserQuery, role: USER_ROLES.MND_SUPER_ADMIN });
+    const admins = await User.find({ ...activeUserQuery, $or: [{ role: USER_ROLES.MND_SUPER_ADMIN }, { role: USER_ROLES.SUPER_ADMIN, workflowRole: { $in: [WORKFLOW_ROLES.MAKER, WORKFLOW_ROLES.CHECKER] } }] });
     const districts = [...new Set(stateQueue.map((item) => item.district))];
     const sample = stateQueue.slice(0, 5).map((item) => `${item.projectCode} (${item.departmentName}, ${item.district})`).join('; ');
     await safeNotify(admins, reminderPayload({
       title: `${stateQueue.length} progress report${stateQueue.length === 1 ? '' : 's'} overdue by more than ${escalateToStateAfterDays} days`,
-      message: `${stateQueue[0].period}: ${stateQueue.length} report${stateQueue.length === 1 ? ' is' : 's are'} still not filed in ${districts.join(', ')}. ${sample}${stateQueue.length > 5 ? ' and more.' : '.'}`,
+      message: `${stateQueue[0].period}: ${stateQueue.length} report${stateQueue.length === 1 ? ' is' : 's are'} still not submitted in ${districts.join(', ')}. ${sample}${stateQueue.length > 5 ? ' and more.' : '.'}`,
       emailDescription: `${stateQueue.length} monthly progress report(s) for ${stateQueue[0].period} are overdue by more than ${escalateToStateAfterDays} days in: ${districts.join(', ')}. Open the deadlines page for the full list.`,
       subject: `SARRA: ${stateQueue.length} overdue MPR(s) need attention`,
       referenceNo: stateQueue[0].period,
       projectTitle: `${stateQueue.length} overdue report(s)`,
-      status: 'RETURNED_TO_PIA',
+      status: 'RETURNED_FOR_CORRECTION',
       priority: 'HIGH',
       primaryLabel: 'Open Deadlines',
-      link: '/dashboard/mnd-admin/deadlines',
+      linkFor: (recipient) => (recipient.role === USER_ROLES.MND_SUPER_ADMIN ? '/dashboard/mnd-admin/deadlines' : '/dashboard/admin/deadlines'),
     }));
     result.escalatedToState = stateQueue.length;
   }
 
+  // A report waiting too long at any review step: remind the users of that step.
   for (const review of reviews.filter((entry) => entry.overdue)) {
     /* eslint-disable no-await-in-loop */
-    const list = await directors(review.district);
-    if (list.length && await claim(`review:${review.mprId}:${review.stamp}`, { kind: 'REVIEW_OVERDUE', project: review.projectId, departmentId: review.departmentId, recipients: list.length })) {
+    const list = await stageRecipients(review.report);
+    if (list.length && await claim(`review:${review.mprId}:${review.status}:${review.stamp}`, { kind: 'REVIEW_OVERDUE', project: review.projectId, departmentId: review.departmentId, recipients: list.length })) {
       await safeNotify(list, reminderPayload({
-        title: `${review.mprNo} has waited ${review.daysWaiting} days for review`,
-        message: `${review.departmentName} report for ${review.period} (${review.projectCode}) is waiting for district review beyond ${districtReviewDays} days.`,
-        emailDescription: `A monthly progress report has been waiting for your review for ${review.daysWaiting} days. Please approve it or return it for correction.`,
-        subject: `Review pending: ${review.mprNo}`,
+        title: `${review.mprNo} has waited ${review.daysWaiting} days for the ${review.stage}`,
+        message: `${review.departmentName} report for ${review.period} (${review.projectCode}) is waiting for ${review.stage} action beyond ${districtReviewDays} days.`,
+        emailDescription: `A monthly progress report has been waiting for your action for ${review.daysWaiting} days. Please forward it or return it to its Maker with remarks.`,
+        subject: `Action pending: ${review.mprNo}`,
         referenceNo: review.mprNo,
         projectTitle: review.projectName,
-        status: 'SUBMITTED',
+        status: review.status,
         priority: 'HIGH',
         relatedResource: 'ProjectMPR',
         relatedId: review.mprId,
         primaryLabel: 'Review MPR',
-        link: `/dashboard/dd/mpr-review/project/${review.mprId}`,
+        linkFor: (recipient) => projectMprPathForRole(recipient.role, review.mprId),
       }));
       result.reviewReminders += 1;
     }
@@ -408,10 +437,11 @@ export const buildMonthlySummary = async ({ period, district = null, now = new D
   const month = period ?? periodOfClock(istClock(now)) - 1;
   const scope = district ? { district } : {};
   const projects = await ProjectSanction.find({ ...scope, status: { $in: SANCTIONED_ON } })
-    .select('projectId sanctionId projectTitle district totalSanctionedBudgetLakh budgetAllocation.releasedLakh closure.status').lean();
+    .select('projectId sanctionId projectTitle district totalSanctionedBudgetLakh closure.status').lean();
   const ids = projects.map((project) => project._id);
   const reports = ids.length
-    ? await ProjectMPR.find({ project: { $in: ids }, periodIndex: { $lte: month } }).select('project district periodIndex status totals.financialCurrentLakh').lean()
+    ? await ProjectMPR.find({ project: { $in: ids }, periodIndex: { $lte: month }, status: { $nin: [PROJECT_MPR_STATUS.DRAFT, PROJECT_MPR_STATUS.REJECTED] } })
+      .select('project district periodIndex status totals.financialCurrentLakh').lean()
     : [];
   const { items } = await collect(settings, scope, () => true, now);
   const owed = items.filter((item) => item.periodIndex === month && item.state !== 'SKIPPED');
@@ -420,24 +450,25 @@ export const buildMonthlySummary = async ({ period, district = null, now = new D
     const ofMonth = subsetReports.filter((report) => report.periodIndex === month);
     const units = (list, pick) => list.reduce((total, entry) => total + toMoney(pick(entry)), 0);
     const sanctioned = units(subset, (p) => p.totalSanctionedBudgetLakh);
-    const released = units(subset, (p) => p.budgetAllocation?.releasedLakh);
     const spent = units(subsetReports, (r) => r.totals?.financialCurrentLakh);
+    const at = (statuses) => ofMonth.filter((r) => statuses.includes(r.status)).length;
     return {
       projects: subset.length,
       closed: subset.filter((p) => p.closure?.status === 'CLOSED').length,
       sanctionedLakh: fromMoney(sanctioned),
-      releasedLakh: fromMoney(released),
       spentLakh: fromMoney(spent),
+      balanceLakh: fromMoney(Math.max(0, sanctioned - spent)),
       spentInMonthLakh: fromMoney(units(ofMonth, (r) => r.totals?.financialCurrentLakh)),
-      utilisationPercent: released > 0 ? Math.floor((Math.min(spent, released) * 10000) / released) / 100 : 0,
+      utilisationPercent: sanctioned > 0 ? Math.floor((Math.min(spent, sanctioned) * 10000) / sanctioned) / 100 : 0,
       reportsExpected: subsetOwed.length,
       reportsFiled: subsetOwed.filter((item) => item.state === 'FILED').length,
       reportsPending: subsetOwed.filter((item) => item.state !== 'FILED').length,
       reportsInMonth: ofMonth.length,
-      awaitingDistrict: ofMonth.filter((r) => r.status === PROJECT_MPR_STATUS.SUBMITTED).length,
-      approved: ofMonth.filter((r) => r.status === PROJECT_MPR_STATUS.DISTRICT_APPROVED).length,
-      verified: ofMonth.filter((r) => r.status === PROJECT_MPR_STATUS.STATE_VERIFIED).length,
-      returned: ofMonth.filter((r) => r.status === PROJECT_MPR_STATUS.RETURNED_TO_PIA).length,
+      atPia: at(AT_PIA),
+      atDistrict: at(AT_DISTRICT),
+      atHq: at(AT_HQ),
+      verified: at([PROJECT_MPR_STATUS.VERIFIED_BY_STATE]),
+      returned: at([PROJECT_MPR_STATUS.RETURNED_FOR_CORRECTION]),
     };
   };
 
@@ -480,17 +511,17 @@ const summaryHtml = (summary) => {
   </div>
   <div style="padding:20px 24px">
     <table role="presentation" style="border-collapse:collapse;width:100%"><tr>
-      ${tile('Projects', t.projects)}${tile('Sanctioned (Rs. lakh)', formatMoney(t.sanctionedLakh))}${tile('Released (Rs. lakh)', formatMoney(t.releasedLakh))}${tile('Spent (Rs. lakh)', formatMoney(t.spentLakh))}
+      ${tile('Projects', t.projects)}${tile('Sanctioned (Rs. lakh)', formatMoney(t.sanctionedLakh))}${tile('Expenditure (Rs. lakh)', formatMoney(t.spentLakh))}${tile('Balance (Rs. lakh)', formatMoney(t.balanceLakh))}
     </tr><tr>
-      ${tile('Spent in the month', formatMoney(t.spentInMonthLakh))}${tile('Utilisation of releases', `${t.utilisationPercent.toFixed(2)}%`)}${tile('Reports filed', `${t.reportsFiled} of ${t.reportsExpected}`)}${tile('Reports pending', t.reportsPending)}
+      ${tile('Spent in the month', formatMoney(t.spentInMonthLakh))}${tile('Financial progress', `${t.utilisationPercent.toFixed(2)}%`)}${tile('Reports filed', `${t.reportsFiled} of ${t.reportsExpected}`)}${tile('Reports pending', t.reportsPending)}
     </tr></table>
-    <p style="font-size:13px;color:#334155;margin:16px 0 8px">Reports for ${escapeHtml(summary.periodLabel)}: ${t.awaitingDistrict} awaiting district review, ${t.approved} approved by district, ${t.verified} verified by State, ${t.returned} returned for correction.</p>
+    <p style="font-size:13px;color:#334155;margin:16px 0 8px">Reports for ${escapeHtml(summary.periodLabel)}: ${t.atPia} at PIA verification, ${t.atDistrict} at district verification, ${t.atHq} at HQ verification, ${t.verified} verified by State, ${t.returned} returned for correction.</p>
     <table style="border-collapse:collapse;width:100%;margin-top:8px">
-      <tr><th style="${head}">${summary.scope === 'State' ? 'District' : 'Project'}</th><th style="${head}text-align:right">Projects</th><th style="${head}text-align:right">Sanctioned</th><th style="${head}text-align:right">Released</th><th style="${head}text-align:right">Spent</th><th style="${head}text-align:right">Reports filed</th><th style="${head}text-align:right">Pending</th></tr>
-      ${summary.rows.map((row) => `<tr><td style="${cell}">${escapeHtml(row.name)}</td><td style="${num}">${row.projects}</td><td style="${num}">${formatMoney(row.sanctionedLakh)}</td><td style="${num}">${formatMoney(row.releasedLakh)}</td><td style="${num}">${formatMoney(row.spentLakh)}</td><td style="${num}">${row.reportsFiled} of ${row.reportsExpected}</td><td style="${num}">${row.reportsPending}</td></tr>`).join('') || `<tr><td style="${cell}" colspan="7">No sanctioned projects.</td></tr>`}
+      <tr><th style="${head}">${summary.scope === 'State' ? 'District' : 'Project'}</th><th style="${head}text-align:right">Projects</th><th style="${head}text-align:right">Sanctioned</th><th style="${head}text-align:right">Expenditure</th><th style="${head}text-align:right">Balance</th><th style="${head}text-align:right">Reports filed</th><th style="${head}text-align:right">Pending</th></tr>
+      ${summary.rows.map((row) => `<tr><td style="${cell}">${escapeHtml(row.name)}</td><td style="${num}">${row.projects}</td><td style="${num}">${formatMoney(row.sanctionedLakh)}</td><td style="${num}">${formatMoney(row.spentLakh)}</td><td style="${num}">${formatMoney(row.balanceLakh)}</td><td style="${num}">${row.reportsFiled} of ${row.reportsExpected}</td><td style="${num}">${row.reportsPending}</td></tr>`).join('') || `<tr><td style="${cell}" colspan="7">No sanctioned projects.</td></tr>`}
     </table>
     ${summary.pending.length ? `<p style="font-size:13px;font-weight:bold;margin:18px 0 6px">Reports not filed (${summary.pending.length})</p>
-    <table style="border-collapse:collapse;width:100%"><tr><th style="${head}">Project</th><th style="${head}">District</th><th style="${head}">Department</th><th style="${head}">PIA officer</th><th style="${head}text-align:right">Days overdue</th></tr>
+    <table style="border-collapse:collapse;width:100%"><tr><th style="${head}">Project</th><th style="${head}">District</th><th style="${head}">Department</th><th style="${head}">Reporting Maker</th><th style="${head}text-align:right">Days overdue</th></tr>
       ${summary.pending.slice(0, 25).map((item) => `<tr><td style="${cell}">${escapeHtml(item.projectCode)}</td><td style="${cell}">${escapeHtml(item.district)}</td><td style="${cell}">${escapeHtml(item.departmentName)}</td><td style="${cell}">${escapeHtml(item.officer)}</td><td style="${num}">${item.daysOverdue || '-'}</td></tr>`).join('')}
     </table>${summary.pending.length > 25 ? `<p style="font-size:12px;color:#475569">And ${summary.pending.length - 25} more. See the attached register and the deadlines page.</p>` : ''}` : ''}
     <p style="font-size:12px;color:#475569;margin-top:18px">Amounts are in Rs. lakh. The attached Excel register lists every report filed for the month. <a href="${frontend}/dashboard" style="color:#0a3d62">Open SARRA CRM</a></p>
@@ -512,7 +543,7 @@ export const sendMonthlyReports = async ({ trigger = 'SCHEDULED', user = null, s
     const list = [...new Set(recipients.map((address) => String(address || '').trim().toLowerCase()).filter(Boolean))];
     if (!list.length) return;
     const summary = await buildMonthlySummary({ period: month, district, now });
-    const filter = { reportingMonth, financialYear, ...(district ? { district } : {}) };
+    const filter = { reportingMonth, financialYear, status: { $ne: PROJECT_MPR_STATUS.DRAFT }, ...(district ? { district } : {}) };
     const register = await buildRegisterWorkbook(filter, `${periodLabel(month)}${district ? ` ${district}` : ''}`);
     const html = summaryHtml(summary);
     const subject = `SARRA Monthly Progress Summary: ${periodLabel(month)}${district ? ` (${district})` : ''}`;

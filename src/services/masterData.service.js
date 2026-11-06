@@ -256,9 +256,13 @@ export const seedMasterData = async () => {
       logger.info(`Master data: seeded ${SEED_DEPARTMENTS.length} departments`);
     }
 
-    if ((await BudgetHead.countDocuments()) === 0) {
-      await BudgetHead.insertMany(SEED_HEADS);
-      logger.info(`Master data: seeded ${SEED_HEADS.length} budget heads`);
+    // Heads are added by code, so a Head introduced later (e.g. 55-05 Pond) reaches an existing
+    // database too. A Head that is already there is never touched.
+    const existingHeads = new Set((await BudgetHead.find().select('code').lean()).map((head) => head.code));
+    const missingHeads = SEED_HEADS.filter((head) => !existingHeads.has(head.code));
+    if (missingHeads.length) {
+      await BudgetHead.insertMany(missingHeads, { ordered: false });
+      logger.info(`Master data: added budget heads ${missingHeads.map((head) => head.code).join(', ')}`);
     }
   } catch (err) {
     // Never block server start-up; a parallel instance may have seeded first.

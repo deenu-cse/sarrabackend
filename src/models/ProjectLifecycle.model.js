@@ -21,10 +21,11 @@ export const COMPLETION_STATUS = {
 /**
  * Completion report of one department of one project.
  *
- * Filed by the department's PIA officer when its works are finished, verified
- * by the District Director, and the basis on which the State closes the
- * project. The money figures are a snapshot taken by the server from the
- * release ledger and the approved progress reports; they are never typed in.
+ * Filed by the department's reporting Maker when its works are finished,
+ * verified by the District Checker or Approver, and the basis on which the HQ
+ * Approver closes the project. The money figures are a snapshot taken by the
+ * server from the sanctioned allocation and the progress reports; they are
+ * never typed in.
  */
 const projectCompletionSchema = new mongoose.Schema({
   project: { type: ObjectId, ref: 'ProjectSanction', required: true },
@@ -39,9 +40,9 @@ const projectCompletionSchema = new mongoose.Schema({
 
   // Snapshot at the time of filing (Rs. lakh)
   sanctionedLakh: { type: Number, default: 0 },
-  releasedLakh: { type: Number, default: 0 },
   expenditureLakh: { type: Number, default: 0 },
-  unspentLakh: { type: Number, default: 0 },
+  // Sanctioned but not spent
+  balanceLakh: { type: Number, default: 0 },
   physicalPercent: { type: Number, default: 0 },
   reportsCount: { type: Number, default: 0 },
 

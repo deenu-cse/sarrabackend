@@ -4,7 +4,9 @@ import MPRPraroop1B from '../models/MPRPraroop1B.model.js';
 import MPRPraroop1C from '../models/MPRPraroop1C.model.js';
 import MPRPraroop1D from '../models/MPRPraroop1D.model.js';
 import MPRAbstract55 from '../models/MPRAbstract55.model.js';
+import ProjectMPR, { PROJECT_MPR_STATUS, MPR_STATUS_LABELS } from '../models/ProjectMPR.model.js';
 import { SANCTION_STATUS } from '../constants/status.constants.js';
+import { actorLabel } from '../utils/access.js';
 
 const MPR_MODELS = [
   { model: MPRPraroop1A, label: 'Praroop-1(A)', key: 'praroop1a' },
@@ -16,57 +18,83 @@ const MPR_MODELS = [
 
 const PROJECT_ACTIONS = {
   CREATED: {
-    label: 'Project submitted by Maker',
-    description: 'Project record was created and sent for checker verification.',
+    label: 'Project created by HQ Maker',
+    description: 'Project and DPR details were entered and sent for HQ Checker verification.',
     from: 'Draft',
     to: 'Pending Checker'
   },
   CHECKER_VERIFIED: {
-    label: 'Project checked',
-    description: 'Checker verified the project and forwarded it for approval.',
+    label: 'Project verified by HQ Checker',
+    description: 'HQ Checker verified the project and forwarded it to the HQ Approver.',
     from: 'Pending Checker',
     to: 'Pending Approver'
   },
   APPROVED: {
-    label: 'Project approved',
-    description: 'Approver sanctioned the project.',
+    label: 'Project sanctioned by HQ Approver',
+    description: 'HQ Approver approved the project and the Sanction ID was generated.',
     from: 'Pending Approver',
     to: 'Sanctioned'
   },
   REJECTED: {
-    label: 'Project returned or rejected',
-    description: 'Project was returned from the current review stage.',
-    to: 'Rejected'
+    label: 'Project returned to HQ Maker',
+    description: 'Project was returned to the HQ Maker with an objection.',
+    to: 'Returned to Maker'
+  },
+  RETURNED: {
+    label: 'Project returned to HQ Maker',
+    description: 'Project was returned to the HQ Maker with an objection.',
+    to: 'Returned to Maker'
+  },
+  RESUBMITTED: {
+    label: 'Project corrected and resubmitted',
+    description: 'HQ Maker corrected the project and sent it back to the HQ Checker.',
+    from: 'Returned to Maker',
+    to: 'Pending Checker'
   },
   FORWARDED_TO_DISTRICT: {
     label: 'Forwarded to district',
-    description: 'Sanctioned project was forwarded to the district office.',
+    description: 'HQ Maker forwarded the sanctioned project to the District SARRA Centre.',
     from: 'Sanctioned',
     to: 'Forwarded to District'
   },
   DISTRICT_ACCEPTED: {
-    label: 'Accepted by district',
-    description: 'District accepted the project and recorded allocation details.',
+    label: 'Accepted by District Maker',
+    description: 'District Maker received and accepted the project.',
     from: 'Forwarded to District',
     to: 'District Accepted'
   },
   FORWARDED_TO_PIA: {
     label: 'Assigned to PIA',
-    description: 'District assigned the project to a PIA officer.',
+    description: 'District Maker assigned the project to a PIA Maker.',
     from: 'District Accepted',
     to: 'Assigned to PIA'
   },
+  REPORTING_ASSIGNED: {
+    label: 'PIA and reporting responsibility assigned',
+    description: 'District Maker assigned the PIA Maker, District Technical Staff and MPR reporting responsibility.',
+    to: 'Assigned to PIA'
+  },
   PIA_ACCEPTED: {
-    label: 'Activated by PIA',
-    description: 'PIA officer accepted and activated the project.',
+    label: 'Accepted by PIA Maker',
+    description: 'PIA Maker accepted the project and implementation began.',
     from: 'Assigned to PIA',
     to: 'Active'
   },
-  RETURNED: {
-    label: 'Returned for correction',
-    description: 'Project was returned for correction.',
-    to: 'Returned'
-  }
+  PIA_TRANSFERRED: { label: 'PIA charge transferred', description: 'District Maker handed a department over to another PIA Maker.' },
+  REVISED: { label: 'Target revision approved', description: 'HQ Approver authorised revised targets.' },
+  COMPLETION_SUBMITTED: { label: 'Completion report filed', description: 'The reporting Maker filed a completion report.' },
+  COMPLETION_VERIFIED: { label: 'Completion verified by district', description: 'District verified a completion report.' },
+  COMPLETION_RETURNED: { label: 'Completion report returned', description: 'District returned a completion report.' },
+  CLOSED: { label: 'Project closed by HQ Approver', description: 'HQ Approver closed the project.', to: 'Closed' },
+};
+
+const PROJECT_MPR_ACTIONS = {
+  DRAFT_SAVED: 'MPR draft saved',
+  SUBMITTED: 'MPR submitted by Maker',
+  RESUBMITTED: 'MPR corrected and resubmitted',
+  FORWARDED: 'MPR verified and forwarded',
+  RETURNED: 'MPR returned for correction',
+  REJECTED: 'MPR rejected',
 };
 
 const MPR_ACTIONS = {
@@ -110,11 +138,42 @@ const mapProjectEvent = (project, step, index) => {
     previousStatus: meta.from,
     newStatus: meta.to,
     performedBy: step.performedBy?.name || 'System',
-    performedByRole: actorRole(step.performedBy, project.makerUserId?.workflowRole),
+    performedByRole: step.role || (step.performedBy ? actorLabel(step.performedBy) : actorRole(step.performedBy, project.makerUserId?.workflowRole)),
+    designation: step.designation || step.performedBy?.designation || null,
     timestamp: step.performedAt || project.updatedAt || project.createdAt,
     href: projectHref(project._id)
   };
 };
+
+/** One action on a project Monthly Progress Report, with who took it and in which role. */
+const mapProjectMprEvent = (mpr, step, index) => ({
+  id: `project-mpr-${mpr._id}-${index}`,
+  kind: 'mpr',
+  action: step.action || step.status,
+  eventName: PROJECT_MPR_ACTIONS[step.action] || `MPR ${MPR_STATUS_LABELS[step.status] || statusLabel(step.status)}`,
+  description: step.note || '',
+  projectId: mpr.project,
+  projectTitle: mpr.projectTitle,
+  referenceNo: mpr.projectCode,
+  mprId: mpr._id,
+  mprReferenceNo: mpr.mprNo,
+  mprType: `MPR ${mpr.departmentName} ${mpr.reportingMonth} ${mpr.financialYear}`,
+  district: mpr.district,
+  status: step.status,
+  newStatus: MPR_STATUS_LABELS[step.status] || statusLabel(step.status),
+  performedBy: step.changedBy?.name || 'System',
+  performedByRole: step.role || (step.changedBy ? actorLabel(step.changedBy) : 'System'),
+  designation: step.designation || step.changedBy?.designation || null,
+  timestamp: step.changedAt || mpr.updatedAt,
+  href: `/dashboard/admin/projects/mpr/${mpr._id}`
+});
+
+const getProjectMprs = (filter, limit) => ProjectMPR.find({ ...filter, status: { $ne: PROJECT_MPR_STATUS.DRAFT } })
+  .sort({ updatedAt: -1 })
+  .limit(limit)
+  .select('mprNo project projectCode projectTitle district departmentName reportingMonth financialYear status revisionHistory updatedAt')
+  .populate('revisionHistory.changedBy', 'name role workflowRole designation')
+  .lean();
 
 const mapMprEvent = (mpr, info, revision, index) => {
   const meta = MPR_ACTIONS[revision.status] || {
@@ -153,7 +212,7 @@ const populateProjectQuery = (query) =>
     .populate('districtAcceptedBy', 'name email role workflowRole district')
     .populate('forwardedToPIA', 'name email role workflowRole department district')
     .populate('piaAcceptedBy', 'name email role workflowRole')
-    .populate('workflowHistory.performedBy', 'name email role workflowRole')
+    .populate('workflowHistory.performedBy', 'name email role workflowRole designation')
     .lean();
 
 const mprSelect = 'applicationNo projectSanctionId sanctionId reportType headCode financialYear reportingMonth status submittedBy submittedByDistrict submittedByDepartment reviewedBy districtApprovedBy revisionHistory submittedAt updatedAt createdAt';
@@ -189,12 +248,13 @@ export const getRecentBusinessActivity = async (limit = 12) => {
     (project.workflowHistory || []).map((step, index) => mapProjectEvent(project, step, index))
   );
 
-  const mprs = await getMprs(null, 8);
+  const [mprs, projectMprs] = await Promise.all([getMprs(null, 8), getProjectMprs({}, 20)]);
   const mprEvents = mprs.flatMap(({ doc, info }) =>
     (doc.revisionHistory || []).map((revision, index) => mapMprEvent(doc, info, revision, index))
   );
+  const projectMprEvents = projectMprs.flatMap((mpr) => (mpr.revisionHistory || []).map((step, index) => mapProjectMprEvent(mpr, step, index)));
 
-  return [...projectEvents, ...mprEvents]
+  return [...projectEvents, ...mprEvents, ...projectMprEvents]
     .filter((event) => event.timestamp)
     .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
     .slice(0, parsedLimit);
@@ -236,15 +296,16 @@ export const getProjectActivity = async (projectId) => {
   const project = await populateProjectQuery(ProjectSanction.findById(projectId));
   if (!project) return null;
 
-  const mprs = await getMprs(projectId, 100);
+  const [mprs, projectMprs] = await Promise.all([getMprs(projectId, 100), getProjectMprs({ project: projectId }, 500)]);
   const projectEvents = (project.workflowHistory || []).map((step, index) =>
     mapProjectEvent(project, step, index)
   );
   const mprEvents = mprs.flatMap(({ doc, info }) =>
     (doc.revisionHistory || []).map((revision, index) => mapMprEvent(doc, info, revision, index))
   );
+  const projectMprEvents = projectMprs.flatMap((mpr) => (mpr.revisionHistory || []).map((step, index) => mapProjectMprEvent(mpr, step, index)));
 
-  const timeline = [...projectEvents, ...mprEvents]
+  const timeline = [...projectEvents, ...mprEvents, ...projectMprEvents]
     .filter((event) => event.timestamp)
     .sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
 
@@ -275,7 +336,18 @@ export const getProjectActivity = async (projectId) => {
       },
       href: projectHref(project._id)
     },
-    mprs: mprs.map(({ doc, info }) => ({
+    mprs: [...projectMprs.map((mpr) => ({
+      id: mpr._id,
+      formType: `MPR — ${mpr.departmentName}`,
+      formKey: 'project',
+      referenceNo: mpr.mprNo,
+      reportingMonth: mpr.reportingMonth,
+      financialYear: mpr.financialYear,
+      status: mpr.status,
+      submittedBy: null,
+      submittedAt: null,
+      href: `/dashboard/admin/projects/mpr/${mpr._id}`
+    })), ...mprs.map(({ doc, info }) => ({
       id: doc._id,
       formType: info.label,
       formKey: info.key,
@@ -286,7 +358,7 @@ export const getProjectActivity = async (projectId) => {
       submittedBy: doc.submittedBy,
       submittedAt: doc.submittedAt,
       href: mprHref(info.key, doc._id)
-    })),
+    }))],
     timeline
   };
 };

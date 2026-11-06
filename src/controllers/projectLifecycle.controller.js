@@ -1,5 +1,6 @@
 import * as closure from '../services/projectClosure.service.js';
 import * as outcomes from '../services/projectOutcome.service.js';
+import * as photos from '../services/projectPhoto.service.js';
 import asyncHandler from '../utils/asyncHandler.js';
 import ApiResponse from '../utils/ApiResponse.js';
 import { HTTP_STATUS } from '../constants/http.constants.js';
@@ -17,7 +18,7 @@ export const getCompletionState = asyncHandler(async (req, res) => {
 /** POST /:id/completion (multipart) */
 export const submitCompletion = asyncHandler(async (req, res) => {
   const doc = await closure.submitCompletion(req.params.id, req.body || {}, req.files || {}, req.user);
-  res.locals.auditMetadata = { stage: 'SUBMITTED', department: doc.departmentName, project: doc.projectCode, expenditureLakh: doc.expenditureLakh, unspentLakh: doc.unspentLakh };
+  res.locals.auditMetadata = { stage: 'SUBMITTED', department: doc.departmentName, project: doc.projectCode, expenditureLakh: doc.expenditureLakh, balanceLakh: doc.balanceLakh };
   ok(res, { id: String(doc._id), status: doc.status }, 'Completion report filed with the district');
 });
 
@@ -42,11 +43,39 @@ export const closeProject = asyncHandler(async (req, res) => {
   ok(res, result, 'Project closed');
 });
 
-/** PATCH /:id/closure/refund */
-export const recordRefund = asyncHandler(async (req, res) => {
-  const result = await closure.recordRefund(req.params.id, req.body || {}, req.user);
-  res.locals.auditMetadata = { stage: 'REFUND_RECORDED', ...result };
-  ok(res, result, 'Refund recorded');
+// --- Field photographs (M&E) ---
+
+/** GET /photos/recent */
+export const recentPhotos = asyncHandler(async (req, res) => {
+  ok(res, await photos.recentPhotos(req.user, { district: single(req.query.district), status: single(req.query.status), limit: req.query.limit }), 'Photographs fetched');
+});
+
+/** GET /:id/photos */
+export const listPhotos = asyncHandler(async (req, res) => {
+  ok(res, await photos.listProjectPhotos(req.params.id, req.user, {
+    departmentId: single(req.query.departmentId), activityCode: single(req.query.activityCode), stage: single(req.query.stage),
+  }), 'Photographs fetched');
+});
+
+/** POST /:id/photos (multipart, field "photos") */
+export const uploadPhotos = asyncHandler(async (req, res) => {
+  const result = await photos.uploadPhotos(req.params.id, req.files || [], req.body || {}, req.user);
+  res.locals.auditMetadata = result;
+  res.status(HTTP_STATUS.CREATED).json(new ApiResponse(HTTP_STATUS.CREATED, result, `${result.added} photograph${result.added === 1 ? '' : 's'} uploaded`));
+});
+
+/** PATCH /:id/photos/:photoId/verify */
+export const verifyPhoto = asyncHandler(async (req, res) => {
+  const result = await photos.verifyPhoto(req.params.id, req.params.photoId, req.body || {}, req.user);
+  res.locals.auditMetadata = result;
+  ok(res, result, result.status === 'VERIFIED' ? 'Photograph verified' : 'Photograph rejected');
+});
+
+/** DELETE /:id/photos/:photoId */
+export const deletePhoto = asyncHandler(async (req, res) => {
+  const result = await photos.deletePhoto(req.params.id, req.params.photoId, req.user);
+  res.locals.auditMetadata = { ...result, stage: 'PHOTO_REMOVED' };
+  ok(res, result, 'Photograph removed');
 });
 
 // --- Outcomes ---

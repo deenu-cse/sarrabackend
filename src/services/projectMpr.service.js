@@ -1,11 +1,19 @@
 import mongoose from 'mongoose';
-import ProjectSanction from '../models/ProjectSanction.model.js';
-import ProjectMPR, { PROJECT_MPR_STATUS, MPR_FORM_TYPE } from '../models/ProjectMPR.model.js';
+import ProjectSanction, { REPORTING_MODE } from '../models/ProjectSanction.model.js';
+import ProjectMPR, { PROJECT_MPR_STATUS, MPR_FORM_TYPE, MPR_ENTRY_MODE } from '../models/ProjectMPR.model.js';
 import BudgetHead from '../models/BudgetHead.model.js';
 import Counter from '../models/Counter.model.js';
-import { BudgetAllocationEntry } from '../models/BudgetAllocation.model.js';
+import User from '../models/User.model.js';
 import { runInTransaction } from '../utils/transaction.js';
-import USER_ROLES from '../constants/roles.constants.js';
+import { SANCTION_STATUS } from '../constants/status.constants.js';
+import USER_ROLES, { TIERS, WORKFLOW_ROLES } from '../constants/roles.constants.js';
+import {
+  actorLabel, designationOf, escapeRegex, sameId, sameText, workflowRoleOf,
+} from '../utils/access.js';
+import {
+  REVIEW_STAGES, IN_REVIEW, WITH_MAKER, canActOnStage, chainOf, firstStageOf, queueFilterFor, stageOwner, statusLabel, statusQuery,
+} from './mprWorkflow.js';
+import { deleteFile } from './upload.service.js';
 import ApiError from '../utils/ApiError.js';
 import { HTTP_STATUS } from '../constants/http.constants.js';
 
@@ -16,7 +24,13 @@ import { HTTP_STATUS } from '../constants/http.constants.js';
  * types this month's progress. Everything else — who may report for which
  * department, the activity list, targets, progress up to the previous month
  * and every total — is derived here from the database.
+ *
+ * A report is prepared by the department's reporting Maker: the PIA Maker, or
+ * District Technical Staff when the district has taken the reporting
+ * responsibility. It then moves through the review chain in mprWorkflow.js.
  */
+
+const S = PROJECT_MPR_STATUS;
 
 // ─── Reporting periods ───────────────────────────────────────────────────────
 
@@ -82,6 +96,7 @@ const fromMoney = (units) => units / MONEY_SCALE;
 const percent = (part, whole) => (whole > 0 ? Math.min(100, Math.floor((part * 10000) / whole) / 100) : 0);
 const trimNumber = (value) => Number(value).toLocaleString('en-IN', { maximumFractionDigits: 3 });
 const lakh = (units) => `₹ ${fromMoney(units).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 5 })} Lakh`;
+const clean = (value, max) => String(value ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
 
 const parseAmount = (value, label) => {
   if (value === '' || value === null || value === undefined) return 0;
@@ -103,28 +118,66 @@ const findProject = async (projectId, session) => {
   return project;
 };
 
-/** Departments of this project that the user is the assigned PIA officer for. */
-const assignedDepartments = (project, user) => (project.departmentAllocations || [])
-  .filter((department) => department.piaUserId && String(department.piaUserId) === String(user._id));
+// A district can take the reporting responsibility only once it has accepted the project.
+const DISTRICT_HOLDS = [SANCTION_STATUS.DISTRICT_ACCEPTED, SANCTION_STATUS.FORWARDED_TO_PIA, SANCTION_STATUS.PIA_ACCEPTED];
+
+const modeOf = (department) => department.reportingMode || REPORTING_MODE.PIA;
+
+/** The user who prepares this department's reports: its PIA Maker, or its District Technical Staff. */
+export const reportingMakerOf = (department) => (modeOf(department) === REPORTING_MODE.DISTRICT ? department.districtStaffUserId : department.piaUserId);
+
+/** Departments of this project whose reports this user prepares. */
+export const reportingDepartments = (project, user) => {
+  if (workflowRoleOf(user) !== WORKFLOW_ROLES.MAKER) return [];
+  return (project.departmentAllocations || []).filter((department) => {
+    if (!sameId(reportingMakerOf(department), user._id)) return false;
+    if (modeOf(department) === REPORTING_MODE.DISTRICT) return user.role === USER_ROLES.DD_LEVEL && user.district === project.district;
+    return user.role === USER_ROLES.PIA_OFFICER;
+  });
+};
+
+/** Can reporting start for this department? (PIA mode: the PIA Maker accepted it. District mode: the district accepted the project.) */
+const reportingReady = (project, department) => (modeOf(department) === REPORTING_MODE.DISTRICT
+  ? Boolean(department.districtStaffUserId) && DISTRICT_HOLDS.includes(project.status)
+  : Boolean(department.piaAcceptedAt));
 
 /**
- * The department this PIA officer may report on. The department id from the
- * browser only chooses among the officer's own assignments; it can never widen
- * them. Throws 403 for anyone else's department.
+ * Departments of a project a PIA user may see: the PIA Maker sees what is
+ * assigned to them; the PIA Checker and Approver see their own department's
+ * assignments in their district.
+ */
+export const piaDepartmentsOf = (project, user) => {
+  if (user.role !== USER_ROLES.PIA_OFFICER) return [];
+  const departments = project.departmentAllocations || [];
+  if (workflowRoleOf(user) === WORKFLOW_ROLES.MAKER) return departments.filter((d) => sameId(d.piaUserId, user._id));
+  if (!user.district || user.district !== project.district) return [];
+  return departments.filter((d) => d.piaUserId && sameText(d.departmentName, user.department));
+};
+
+/**
+ * The department this user may report on. The department id from the browser
+ * only chooses among the user's own reporting responsibilities; it can never
+ * widen them. Throws 403 for anyone else's department.
  */
 const authorizeReporting = (project, user, departmentId) => {
-  if (user.role !== USER_ROLES.PIA_OFFICER) throw forbidden('Only PIA officers can submit monthly progress reports.');
-  const mine = assignedDepartments(project, user);
-  if (!mine.length) throw forbidden('You are not assigned to this project.');
+  if (workflowRoleOf(user) !== WORKFLOW_ROLES.MAKER || ![USER_ROLES.PIA_OFFICER, USER_ROLES.DD_LEVEL].includes(user.role)) {
+    throw forbidden('Only the reporting Maker of a department (PIA Maker or District Technical Staff) can prepare its monthly progress report.');
+  }
+  const mine = reportingDepartments(project, user);
+  if (!mine.length) throw forbidden('You do not hold the reporting responsibility for this project.');
 
   const department = isValidId(departmentId)
     ? mine.find((item) => String(item.departmentId) === departmentId)
     : (mine.length === 1 ? mine[0] : null);
   if (!department) {
-    // Either not a department of this project, or one assigned to another officer.
-    throw forbidden('You are not the assigned PIA officer for this department.');
+    // Either not a department of this project, or one reported by someone else.
+    throw forbidden('You do not hold the reporting responsibility for this department.');
   }
-  if (!department.piaAcceptedAt) throw forbidden(`Accept the project for ${department.departmentName} before reporting progress.`);
+  if (!reportingReady(project, department)) {
+    throw forbidden(modeOf(department) === REPORTING_MODE.DISTRICT
+      ? 'The district must accept the project before progress can be reported.'
+      : `Accept the project for ${department.departmentName} before reporting progress.`);
+  }
   if (project.closure?.status === 'CLOSED') throw conflict('This project is closed. Progress can no longer be reported against it.', 'PROJECT_CLOSED');
   if (['SUBMITTED', 'DISTRICT_VERIFIED'].includes(department.completion?.status)) {
     throw conflict(`The completion report of ${department.departmentName} has been filed, so no further monthly report can be submitted.`, 'COMPLETION_FILED');
@@ -133,9 +186,9 @@ const authorizeReporting = (project, user, departmentId) => {
 };
 
 const canReadProject = (project, user) => {
-  if ([USER_ROLES.SUPER_ADMIN, USER_ROLES.MND_SUPER_ADMIN].includes(user.role)) return true;
+  if ([USER_ROLES.SUPER_ADMIN, USER_ROLES.MND_SUPER_ADMIN, USER_ROLES.MND_OFFICER].includes(user.role)) return true;
   if (user.role === USER_ROLES.DD_LEVEL) return Boolean(user.district) && user.district === project.district;
-  if (user.role === USER_ROLES.PIA_OFFICER) return assignedDepartments(project, user).length > 0;
+  if (user.role === USER_ROLES.PIA_OFFICER) return piaDepartmentsOf(project, user).length > 0;
   return false;
 };
 
@@ -145,12 +198,29 @@ export const assertCanReadProject = async (projectId, user) => {
   return project;
 };
 
+/** May this user read this report? */
+const canReadReport = (project, mpr, user) => {
+  if (user.role === USER_ROLES.PIA_OFFICER) {
+    return sameId(mpr.submittedBy, user._id) || piaDepartmentsOf(project, user).some((d) => sameId(d.departmentId, mpr.departmentId));
+  }
+  return canReadProject(project, user);
+};
+
+/** Is this user the reporting Maker who may still change the report? */
+const isReportingMaker = (project, mpr, user) => {
+  const department = (project.departmentAllocations || []).find((d) => sameId(d.departmentId, mpr.departmentId));
+  if (!department || modeOf(department) !== (mpr.entryMode || MPR_ENTRY_MODE.PIA)) return false;
+  return reportingDepartments(project, user).some((d) => sameId(d.departmentId, mpr.departmentId));
+};
+
 // ─── Form (activities, targets, previous progress) ───────────────────────────
 
-const formTypeFor = (headCode) => (headCode === '55-04' ? MPR_FORM_TYPE.HEAD_55_4 : MPR_FORM_TYPE.HEAD_55_1_TO_3);
+const FORM_TYPE_OF_HEAD = { '55-04': MPR_FORM_TYPE.HEAD_55_4, '55-05': MPR_FORM_TYPE.HEAD_55_5 };
+const formTypeFor = (headCode) => FORM_TYPE_OF_HEAD[headCode] || MPR_FORM_TYPE.HEAD_55_1_TO_3;
 
+/** Every live (not rejected) report of one department, oldest first. */
 const loadChain = (projectId, departmentId, session) => {
-  const query = ProjectMPR.find({ project: projectId, departmentId }).sort({ periodIndex: 1 }).lean();
+  const query = ProjectMPR.find({ project: projectId, departmentId, status: { $ne: S.REJECTED } }).sort({ periodIndex: 1 }).lean();
   return session ? query.session(session) : query;
 };
 
@@ -172,7 +242,8 @@ const buildForm = (project, department, masterByCode, chain, period, { excludeId
   const earlier = others.filter((mpr) => mpr.periodIndex < period.periodIndex);
   const later = others.filter((mpr) => mpr.periodIndex > period.periodIndex);
   const same = others.find((mpr) => mpr.periodIndex === period.periodIndex);
-  const returned = others.find((mpr) => mpr.status === PROJECT_MPR_STATUS.RETURNED_TO_PIA);
+  const returned = others.find((mpr) => mpr.status === S.RETURNED_FOR_CORRECTION);
+  const draft = others.find((mpr) => mpr.status === S.DRAFT);
 
   // Progress up to the previous month = everything reported in earlier periods.
   const previous = new Map();
@@ -204,16 +275,23 @@ const buildForm = (project, department, masterByCode, chain, period, { excludeId
 
   let blocker = null;
   if (same) {
+    const state = { [S.RETURNED_FOR_CORRECTION]: 'filed and returned for correction — open it to correct and resubmit', [S.DRAFT]: 'saved as a draft — open it to continue' }[same.status] || 'submitted';
     blocker = {
-      code: 'DUPLICATE',
-      message: `A progress report for ${periodLabel(period.periodIndex)} has already been ${same.status === PROJECT_MPR_STATUS.RETURNED_TO_PIA ? 'filed and returned for correction — open it to resubmit' : 'submitted'} for ${department.departmentName}.`,
+      code: same.status === S.DRAFT ? 'DRAFT_EXISTS' : 'DUPLICATE',
+      message: `A progress report for ${periodLabel(period.periodIndex)} has already been ${state} for ${department.departmentName}. Only one report can exist for a project, department and month.`,
       mprId: String(same._id),
     };
   } else if (returned) {
     blocker = {
       code: 'RETURNED_PENDING',
-      message: `The report for ${periodLabel(returned.periodIndex)} was returned for correction. Resubmit it before filing another month.`,
+      message: `The report for ${periodLabel(returned.periodIndex)} was returned for correction. Correct and resubmit it before filing another month.`,
       mprId: String(returned._id),
+    };
+  } else if (draft) {
+    blocker = {
+      code: 'DRAFT_PENDING',
+      message: `The report for ${periodLabel(draft.periodIndex)} is still a draft. Submit or discard it before filing another month.`,
+      mprId: String(draft._id),
     };
   } else if (later.length) {
     const latest = later[later.length - 1];
@@ -237,7 +315,11 @@ const buildForm = (project, department, masterByCode, chain, period, { excludeId
   };
 };
 
-/** Apply this month's entries to the form and enforce every limit. Returns the rows to store. */
+/**
+ * Apply this month's entries to the form and enforce every limit: physical
+ * progress against the approved DPR target, expenditure against the sanctioned
+ * financial allocation. Progress beyond a target needs an approved revision.
+ */
 const applyEntries = (form, rawEntries, departmentName) => {
   const inputs = Array.isArray(rawEntries) ? rawEntries : [];
   const known = new Map(form.activities.map((activity) => [activity.activityCode, activity]));
@@ -249,7 +331,7 @@ const applyEntries = (form, rawEntries, departmentName) => {
     byCode.set(code, input);
   }
 
-  const rows = form.activities.map((activity) => {
+  return form.activities.map((activity) => {
     const input = byCode.get(activity.activityCode) || {};
     const name = activity.activityName;
 
@@ -264,7 +346,7 @@ const applyEntries = (form, rawEntries, departmentName) => {
     if (previousPhysical + currentPhysical > targetPhysical) {
       const remaining = Math.max(0, targetPhysical - previousPhysical);
       throw bad(
-        `${name}: Progress cannot exceed the total target. Remaining target: ${trimNumber(fromPhysical(remaining))}${activity.unit ? ` ${activity.unit.replace(/\.$/, '')}` : ''}.`,
+        `${name}: Progress cannot exceed the approved target without an approved target revision. Remaining target: ${trimNumber(fromPhysical(remaining))}${activity.unit ? ` ${activity.unit.replace(/\.$/, '')}` : ''}.`,
         { code: 'PHYSICAL_TARGET_EXCEEDED', activityCode: activity.activityCode, remaining: fromPhysical(remaining) },
       );
     }
@@ -277,7 +359,7 @@ const applyEntries = (form, rawEntries, departmentName) => {
     if (previousMoney + currentMoney > targetMoney) {
       const remaining = Math.max(0, targetMoney - previousMoney);
       throw bad(
-        `${name}: Financial progress cannot exceed the financial target. Remaining: ${lakh(remaining)}.`,
+        `${name}: Expenditure cannot exceed the sanctioned financial allocation without an approved revision. Remaining: ${lakh(remaining)}.`,
         { code: 'FINANCIAL_TARGET_EXCEEDED', activityCode: activity.activityCode, remainingLakh: fromMoney(remaining) },
       );
     }
@@ -290,8 +372,6 @@ const applyEntries = (form, rawEntries, departmentName) => {
       financialTotalLakh: fromMoney(previousMoney + currentMoney),
     };
   });
-
-  return rows;
 };
 
 const summarize = (rows) => {
@@ -335,6 +415,7 @@ const projectDto = (project) => ({
   block: project.location?.block || '',
   gramPanchayat: project.location?.gramPanchayat || '',
   village: project.location?.village || '',
+  financialYear: project.financialYear || '',
   status: project.status,
 });
 
@@ -348,16 +429,22 @@ const headDto = (project) => (project.head?.code ? {
 const listDto = (mpr) => ({
   id: String(mpr._id),
   mprNo: mpr.mprNo,
-  project: { id: String(mpr.project?._id || mpr.project), code: mpr.projectCode, projectName: mpr.projectTitle },
+  project: { id: String(mpr.project?._id || mpr.project), code: mpr.projectCode, sanctionId: mpr.sanctionCode || null, projectName: mpr.projectTitle },
   district: mpr.district,
+  location: { block: mpr.location?.block || '', gramPanchayat: mpr.location?.gramPanchayat || '', village: mpr.location?.village || '' },
   departmentId: String(mpr.departmentId),
   departmentName: mpr.departmentName,
+  pia: mpr.pia?.name ? { name: mpr.pia.name } : null,
   head: mpr.head,
   formType: mpr.formType,
+  entryMode: mpr.entryMode || MPR_ENTRY_MODE.PIA,
   financialYear: mpr.financialYear,
   reportingMonth: mpr.reportingMonth,
   period: periodLabel(mpr.periodIndex),
   status: mpr.status,
+  statusLabel: statusLabel(mpr.status),
+  awaiting: stageOwner(mpr.status),
+  stageEnteredAt: mpr.stageEnteredAt || mpr.updatedAt || null,
   totals: mpr.totals,
   submittedBy: mpr.submittedBy?.name ? { name: mpr.submittedBy.name } : null,
   submittedAt: mpr.submittedAt,
@@ -366,46 +453,69 @@ const listDto = (mpr) => ({
   evidenceCount: (mpr.evidence || []).length,
   returnReason: mpr.returnReason || null,
   returnedByLevel: mpr.returnedByLevel || null,
+  returnedByRole: mpr.returnedByRole || null,
+  rejectionReason: mpr.rejectionReason || null,
 });
 
-// ─── PIA: workload, context, form ────────────────────────────────────────────
+const history = (user, { status, action, level, note }) => ({
+  status,
+  action,
+  level,
+  role: actorLabel(user),
+  designation: designationOf(user),
+  changedBy: user._id,
+  changedAt: new Date(),
+  note,
+});
 
-/** Projects (and only the departments) this PIA officer can report on. */
+// ─── Maker: workload, context, form ──────────────────────────────────────────
+
+/** Projects (and only the departments) this Maker reports on. */
 export const getWorkload = async (user) => {
-  const projects = await ProjectSanction.find({ 'departmentAllocations.piaUserId': user._id })
-    .select('projectId sanctionId projectTitle district location head status departmentAllocations.departmentId departmentAllocations.departmentName departmentAllocations.piaUserId departmentAllocations.piaAcceptedAt departmentAllocations.completion closure')
+  const filter = user.role === USER_ROLES.DD_LEVEL
+    ? { district: user.district, 'departmentAllocations.districtStaffUserId': user._id }
+    : { 'departmentAllocations.piaUserId': user._id };
+  const projects = await ProjectSanction.find(filter)
+    .select('projectId sanctionId projectTitle district location head status financialYear departmentAllocations.departmentId departmentAllocations.departmentName departmentAllocations.piaUserId departmentAllocations.piaAcceptedAt departmentAllocations.reportingMode departmentAllocations.districtStaffUserId departmentAllocations.completion closure')
     .sort({ updatedAt: -1 })
     .lean();
 
   return projects.filter((project) => project.closure?.status !== 'CLOSED').map((project) => ({
     ...projectDto(project),
     head: headDto(project),
-    departments: assignedDepartments(project, user).map((department) => ({
+    departments: reportingDepartments(project, user).map((department) => ({
       departmentId: String(department.departmentId),
       name: department.departmentName,
-      accepted: Boolean(department.piaAcceptedAt),
+      reportingMode: modeOf(department),
+      accepted: reportingReady(project, department),
       completionFiled: ['SUBMITTED', 'DISTRICT_VERIFIED'].includes(department.completion?.status),
     })).filter((department) => !department.completionFiled),
   })).filter((project) => project.departments.some((department) => department.accepted));
 };
 
+const MONTH_REASON = {
+  [S.RETURNED_FOR_CORRECTION]: 'Returned — correct and resubmit',
+  [S.DRAFT]: 'Draft saved — continue it',
+};
+
 /** Financial years and months that can be chosen for a department, with what is already filed. */
 export const getContext = async (projectId, departmentId, user) => {
   const project = await findProject(projectId);
-  const mine = assignedDepartments(project, user);
-  if (user.role !== USER_ROLES.PIA_OFFICER || !mine.length) throw forbidden('You are not assigned to this project.');
+  const mine = reportingDepartments(project, user);
+  if (!mine.length) throw forbidden('You do not hold the reporting responsibility for this project.');
 
   const departments = mine.map((department) => ({
     departmentId: String(department.departmentId),
     name: department.departmentName,
-    accepted: Boolean(department.piaAcceptedAt),
+    reportingMode: modeOf(department),
+    accepted: reportingReady(project, department),
   }));
 
   const selected = isValidId(departmentId) || mine.length === 1 ? authorizeReporting(project, user, departmentId) : null;
   const chain = selected ? await loadChain(project._id, selected.departmentId) : [];
   const filed = new Map(chain.map((mpr) => [mpr.periodIndex, mpr]));
   const latestFiled = chain.length ? chain[chain.length - 1].periodIndex : null;
-  const hasReturned = chain.some((mpr) => mpr.status === PROJECT_MPR_STATUS.RETURNED_TO_PIA);
+  const pending = chain.find((mpr) => WITH_MAKER.includes(mpr.status));
 
   const now = new Date();
   const start = projectStart(project);
@@ -419,8 +529,8 @@ export const getContext = async (projectId, departmentId, user) => {
       let reason = '';
       if (periodIndex > currentPeriod) reason = 'Not started yet';
       else if (periodIndex < startPeriod) reason = 'Before the project started';
-      else if (existing) reason = existing.status === PROJECT_MPR_STATUS.RETURNED_TO_PIA ? 'Returned — resubmit' : 'Already submitted';
-      else if (hasReturned) reason = 'Resubmit the returned report first';
+      else if (existing) reason = MONTH_REASON[existing.status] || 'Already submitted';
+      else if (pending) reason = pending.status === S.DRAFT ? 'Finish the saved draft first' : 'Resubmit the returned report first';
       else if (latestFiled !== null && periodIndex < latestFiled) reason = 'A later month is already filed';
       return {
         value: month,
@@ -446,6 +556,7 @@ export const getContext = async (projectId, departmentId, user) => {
 const formResponse = (project, department, period, form, rows = null) => ({
   project: projectDto(project),
   department: { departmentId: String(department.departmentId), name: department.departmentName },
+  reportingMode: modeOf(department),
   head: headDto(project),
   formType: formTypeFor(project.head?.code),
   financialYear: period.financialYear,
@@ -478,41 +589,51 @@ export const previewMpr = async (body = {}, user) => {
   const form = buildForm(project, department, masterByCode, chain, period);
   if (form.blocker) throw conflict(form.blocker.message, form.blocker.code, { mprId: form.blocker.mprId });
   const rows = applyEntries(form, body.entries, department.departmentName);
-  return { ...formResponse(project, department, period, form, rows), remarks: String(body.remarks ?? '').trim().slice(0, 1000) };
+  return { ...formResponse(project, department, period, form, rows), remarks: clean(body.remarks, 1000) };
 };
 
-/** The correction form for a returned report: same rules, pre-filled with what was submitted. */
-export const getResubmitForm = async (mprId, user) => {
+/** A report the Maker may still change: a draft, or one returned for correction. */
+const loadEditable = async (mprId, user, session) => {
   if (!isValidId(mprId)) throw notFound('Report not found.');
-  const mpr = await ProjectMPR.findById(mprId).lean();
+  const query = ProjectMPR.findById(mprId);
+  const mpr = await (session ? query.session(session) : query);
   if (!mpr) throw notFound('Report not found.');
-  const project = await findProject(String(mpr.project));
+  const project = await findProject(String(mpr.project), session);
   const department = authorizeReporting(project, user, String(mpr.departmentId));
-  if (mpr.status !== PROJECT_MPR_STATUS.RETURNED_TO_PIA) throw conflict('Only a report returned for correction can be edited.', 'NOT_RETURNED');
+  if (modeOf(department) !== (mpr.entryMode || MPR_ENTRY_MODE.PIA)) {
+    throw conflict('The reporting responsibility of this department has changed since the report was made.', 'MODE_CHANGED');
+  }
+  if (!WITH_MAKER.includes(mpr.status)) throw conflict('Only a draft or a report returned for correction can be edited.', 'NOT_EDITABLE');
+  return { mpr, project, department };
+};
 
+/** The editing form for a draft or a returned report: same rules, pre-filled with what was saved. */
+export const getEditForm = async (mprId, user) => {
+  const { mpr, project, department } = await loadEditable(mprId, user);
   const period = { financialYear: mpr.financialYear, fyStartYear: mpr.fyStartYear, reportingMonth: mpr.reportingMonth, periodIndex: mpr.periodIndex };
   const [chain, masterByCode] = await Promise.all([loadChain(project._id, department.departmentId), loadHeadActivities(project)]);
   const form = buildForm(project, department, masterByCode, chain, period, { excludeId: mpr._id });
-  if (form.blocker?.code === 'RETURNED_PENDING') form.blocker = null;
   return {
     ...formResponse(project, department, period, form),
     mprId: String(mpr._id),
     mprNo: mpr.mprNo,
-    returnReason: mpr.returnReason || '',
+    status: mpr.status,
+    returnReason: mpr.status === S.RETURNED_FOR_CORRECTION ? mpr.returnReason || '' : '',
+    returnedByRole: mpr.status === S.RETURNED_FOR_CORRECTION ? mpr.returnedByRole || null : null,
     remarks: mpr.remarks || '',
     entries: (mpr.activities || []).map((a) => ({ activityCode: a.activityCode, physicalCurrent: a.physicalCurrent, financialCurrentLakh: a.financialCurrentLakh })),
   };
 };
 
-/** Preview of a correction. Writes nothing. */
-export const previewResubmit = async (mprId, body = {}, user) => {
-  const base = await getResubmitForm(mprId, user);
+/** Preview of an edit. Writes nothing. */
+export const previewEdit = async (mprId, body = {}, user) => {
+  const base = await getEditForm(mprId, user);
   if (base.blocker) throw conflict(base.blocker.message, base.blocker.code);
   const rows = applyEntries({ activities: base.activities }, body.entries, base.department.name);
-  return { ...base, activities: rows, totals: summarize(rows), remarks: String(body.remarks ?? '').trim().slice(0, 1000) };
+  return { ...base, activities: rows, totals: summarize(rows), remarks: clean(body.remarks, 1000) };
 };
 
-// ─── Submit / resubmit ───────────────────────────────────────────────────────
+// ─── Create / save / submit ──────────────────────────────────────────────────
 
 const versionFilter = (version) => (version > 0
   ? { mprVersion: version }
@@ -530,16 +651,30 @@ const nextMprNumber = async (project, session) => {
   return `${prefix}-${String(counter.seq).padStart(5, '0')}`;
 };
 
+/** The status a Maker's submission goes to, and the steps it already counts as taken. */
+const submission = (entryMode, user, now) => {
+  const status = firstStageOf(entryMode);
+  // District Technical Staff is the District Maker: the "receive at district" step is theirs.
+  const steps = entryMode === MPR_ENTRY_MODE.DISTRICT ? { districtMaker: { by: user._id, at: now, note: 'Entered by District Technical Staff' } } : {};
+  return { status, steps };
+};
+
+const submitNote = (entryMode) => (entryMode === MPR_ENTRY_MODE.DISTRICT
+  ? 'Entered by District Technical Staff and submitted to the District Checker'
+  : 'Submitted to the PIA Checker');
+
 const MAX_ATTEMPTS = 4;
 const RETRY = Symbol('retry');
 
 /**
- * Save a report. Re-validates everything inside one transaction and claims the
- * project's report version, so two reports for the same project cannot be
- * validated against the same "previous progress" and both be saved. The
- * unique index is the final guard against a duplicate period.
+ * Save a new report, as a draft or submitted to the first reviewer. Re-validates
+ * everything inside one transaction and claims the project's report version, so
+ * two reports for the same project cannot be validated against the same
+ * "previous progress" and both be saved. The unique index is the final guard
+ * against a second report for the same month.
  */
 export const submitMpr = async (body = {}, user) => {
+  const asDraft = body.asDraft === true || body.asDraft === 'true';
   for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
     try {
       // eslint-disable-next-line no-await-in-loop
@@ -566,34 +701,48 @@ export const submitMpr = async (body = {}, user) => {
         if (claimed.modifiedCount !== 1) return RETRY;
 
         const now = new Date();
+        const entryMode = modeOf(department);
+        const pia = department.piaUserId ? await User.findById(department.piaUserId).select('name').lean() : null;
+        const { status, steps } = asDraft ? { status: S.DRAFT, steps: {} } : submission(entryMode, user, now);
         const mprNo = await nextMprNumber(project, session);
         try {
           const [created] = await ProjectMPR.create([{
             mprNo,
             project: project._id,
             projectCode: project.projectId || project.sanctionId || '',
+            sanctionCode: project.sanctionId || '',
             projectTitle: project.projectTitle,
             district: project.district,
+            location: { block: project.location?.block || '', gramPanchayat: project.location?.gramPanchayat || '', village: project.location?.village || '' },
             departmentId: department.departmentId,
             departmentName: department.departmentName,
+            pia: pia ? { userId: pia._id, name: pia.name } : undefined,
             head: { headId: project.head.headId, code: project.head.code, name: project.head.name },
             formType: formTypeFor(project.head.code),
+            entryMode,
             financialYear: period.financialYear,
             fyStartYear: period.fyStartYear,
             reportingMonth: period.reportingMonth,
             periodIndex: period.periodIndex,
-            status: PROJECT_MPR_STATUS.SUBMITTED,
+            status,
+            stageEnteredAt: now,
+            steps,
             activities: rows,
             totals: summarize(rows),
-            remarks: String(body.remarks ?? '').trim().slice(0, 1000),
+            remarks: clean(body.remarks, 1000),
             submittedBy: user._id,
-            submittedAt: now,
-            revisionHistory: [{ status: PROJECT_MPR_STATUS.SUBMITTED, changedBy: user._id, changedAt: now, note: 'Submitted to district' }],
+            submittedAt: asDraft ? undefined : now,
+            revisionHistory: [history(user, {
+              status,
+              action: asDraft ? 'DRAFT_SAVED' : 'SUBMITTED',
+              level: entryMode === MPR_ENTRY_MODE.DISTRICT ? 'DISTRICT' : 'PIA',
+              note: asDraft ? 'Saved as draft' : submitNote(entryMode),
+            })],
           }], options);
           return created;
         } catch (err) {
-          if (err?.code === 11000) {
-            throw conflict(`A progress report for ${periodLabel(period.periodIndex)} has already been submitted for ${department.departmentName}.`, 'DUPLICATE');
+          if (err?.code === 11000 && /one_live_report_per_month|reportingMonth/.test(err.message || '')) {
+            throw conflict(`A progress report for ${periodLabel(period.periodIndex)} already exists for ${department.departmentName}.`, 'DUPLICATE');
           }
           throw err;
         }
@@ -609,39 +758,60 @@ export const submitMpr = async (body = {}, user) => {
   throw conflict('Another report for this project was being saved at the same time. Please try again.', 'BUSY');
 };
 
-/** Correct and resubmit a report the district returned. */
-export const resubmitMpr = async (mprId, body = {}, user) => {
-  if (!isValidId(mprId)) throw notFound('Report not found.');
+/**
+ * Save changes to a draft or a returned report. With `asDraft` the report
+ * stays with the Maker; otherwise it is (re)submitted to the first reviewer of
+ * its chain — a returned report goes through the whole chain again.
+ */
+export const saveMpr = async (mprId, body = {}, user) => {
+  const asDraft = body.asDraft === true || body.asDraft === 'true';
   return runInTransaction(async (session) => {
     const options = session ? { session } : {};
-    const existingQuery = ProjectMPR.findById(mprId);
-    const mpr = await (session ? existingQuery.session(session) : existingQuery);
-    if (!mpr) throw notFound('Report not found.');
-    const project = await findProject(String(mpr.project), session);
-    const department = authorizeReporting(project, user, String(mpr.departmentId));
-    if (mpr.status !== PROJECT_MPR_STATUS.RETURNED_TO_PIA) throw conflict('Only a report returned for correction can be resubmitted.', 'NOT_RETURNED');
-
+    const { mpr, project, department } = await loadEditable(mprId, user, session);
     const period = { financialYear: mpr.financialYear, fyStartYear: mpr.fyStartYear, reportingMonth: mpr.reportingMonth, periodIndex: mpr.periodIndex };
     const [chain, masterByCode] = await Promise.all([
       loadChain(project._id, department.departmentId, session),
       loadHeadActivities(project, session),
     ]);
     const form = buildForm(project, department, masterByCode, chain, period, { excludeId: mpr._id });
-    if (form.blocker && form.blocker.code !== 'RETURNED_PENDING') throw conflict(form.blocker.message, form.blocker.code);
+    if (form.blocker) throw conflict(form.blocker.message, form.blocker.code);
     const rows = applyEntries(form, body.entries, department.departmentName);
 
     const now = new Date();
+    const wasReturned = mpr.status === S.RETURNED_FOR_CORRECTION;
     mpr.activities = rows;
     mpr.totals = summarize(rows);
-    mpr.remarks = String(body.remarks ?? '').trim().slice(0, 1000);
-    mpr.status = PROJECT_MPR_STATUS.SUBMITTED;
-    mpr.submittedBy = user._id;
-    mpr.submittedAt = now;
-    mpr.returnReason = undefined;
-    mpr.revisionHistory.push({ status: PROJECT_MPR_STATUS.SUBMITTED, changedBy: user._id, changedAt: now, note: 'Resubmitted after correction' });
+    mpr.remarks = clean(body.remarks, 1000);
+    const level = mpr.entryMode === MPR_ENTRY_MODE.DISTRICT ? 'DISTRICT' : 'PIA';
+    if (asDraft) {
+      mpr.revisionHistory.push(history(user, { status: mpr.status, action: 'DRAFT_SAVED', level, note: wasReturned ? 'Correction saved, not yet resubmitted' : 'Draft updated' }));
+    } else {
+      const { status, steps } = submission(mpr.entryMode, user, now);
+      mpr.status = status;
+      mpr.steps = steps;
+      mpr.stageEnteredAt = now;
+      mpr.submittedBy = user._id;
+      mpr.submittedAt = now;
+      mpr.revisionHistory.push(history(user, {
+        status,
+        action: wasReturned ? 'RESUBMITTED' : 'SUBMITTED',
+        level,
+        note: wasReturned ? `Corrected and resubmitted. ${submitNote(mpr.entryMode)}` : submitNote(mpr.entryMode),
+      }));
+    }
     await mpr.save(options);
     return mpr;
   });
+};
+
+/** Discard a draft that was never submitted. */
+export const deleteDraft = async (mprId, user) => {
+  const { mpr } = await loadEditable(mprId, user);
+  if (mpr.status !== S.DRAFT) throw conflict('Only a draft can be discarded. A submitted report stays on record.', 'NOT_DRAFT');
+  const removed = await ProjectMPR.deleteOne({ _id: mpr._id, status: S.DRAFT });
+  if (removed.deletedCount !== 1) throw conflict('The draft changed while it was being discarded. Please reload.', 'STALE');
+  (mpr.evidence || []).forEach((item) => { if (item.publicId) deleteFile(item.publicId); });
+  return { id: String(mpr._id), mprNo: mpr.mprNo, period: periodLabel(mpr.periodIndex), departmentName: mpr.departmentName };
 };
 
 // ─── Reading ─────────────────────────────────────────────────────────────────
@@ -657,81 +827,120 @@ const paginateList = async (filter, page, limit) => {
   return { data: items.map(listDto), pagination: { page: safePage, limit: safeLimit, total, pages: Math.ceil(total / safeLimit) } };
 };
 
-const statusFilter = (status) => (Object.values(PROJECT_MPR_STATUS).includes(status) ? { status } : {});
+const departmentPattern = (name) => new RegExp(`^\\s*${escapeRegex(String(name).trim())}\\s*$`, 'i');
 
-/** Reports for the departments this PIA officer is currently assigned to (plus any they filed). */
+/**
+ * Reports of a PIA user. The Maker sees the departments it reports on (plus
+ * anything it filed); the Checker and Approver see their department's reports
+ * in their district. Drafts are private to their Maker.
+ */
 export const listMine = async (user, { status, page, limit } = {}) => {
-  const projects = await ProjectSanction.find({ 'departmentAllocations.piaUserId': user._id })
-    .select('departmentAllocations.departmentId departmentAllocations.piaUserId').lean();
-  const assigned = projects.flatMap((project) => assignedDepartments(project, user)
-    .map((department) => ({ project: project._id, departmentId: department.departmentId })));
-  return paginateList({ $or: [{ submittedBy: user._id }, ...assigned], ...statusFilter(status) }, page, limit);
+  let scope;
+  if (workflowRoleOf(user) === WORKFLOW_ROLES.MAKER) {
+    const projects = await ProjectSanction.find(user.role === USER_ROLES.DD_LEVEL
+      ? { 'departmentAllocations.districtStaffUserId': user._id }
+      : { 'departmentAllocations.piaUserId': user._id })
+      .select('district status departmentAllocations.departmentId departmentAllocations.piaUserId departmentAllocations.districtStaffUserId departmentAllocations.reportingMode').lean();
+    const assigned = projects.flatMap((project) => reportingDepartments(project, user)
+      .map((department) => ({ project: project._id, departmentId: department.departmentId, status: { $ne: S.DRAFT } })));
+    scope = { $or: [{ submittedBy: user._id }, ...assigned] };
+  } else {
+    if (!user.district || !user.department) return { data: [], pagination: { page: 1, limit: 20, total: 0, pages: 0 } };
+    scope = { district: user.district, departmentName: departmentPattern(user.department), status: { $ne: S.DRAFT } };
+  }
+  const wanted = statusQuery(status);
+  return paginateList(wanted.status ? { $and: [scope, wanted] } : scope, page, limit);
 };
 
 export const listForDistrict = async (user, { status, page, limit } = {}) => {
   if (!user.district) throw bad('District not set for user');
-  return paginateList({ district: user.district, ...statusFilter(status) }, page, limit);
+  const wanted = statusQuery(status);
+  // A district sees every report of its district except other people's drafts.
+  const scope = { district: user.district, $or: [{ status: { $ne: S.DRAFT } }, { submittedBy: user._id }] };
+  return paginateList(wanted.status ? { $and: [scope, wanted] } : scope, page, limit);
 };
 
-const escapeRegex = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+/** Reports waiting for the signed-in user's own action, oldest first. */
+export const listQueue = async (user, { limit } = {}) => {
+  const filter = queueFilterFor(user);
+  if (!filter) return { data: [], total: 0 };
+  const safeLimit = Math.min(200, Math.max(1, parseInt(limit, 10) || 100));
+  const [items, total] = await Promise.all([
+    ProjectMPR.find(filter).select('-activities -revisionHistory').populate('submittedBy', 'name')
+      .sort({ stageEnteredAt: 1, submittedAt: 1 }).limit(safeLimit).lean(),
+    ProjectMPR.countDocuments(filter),
+  ]);
+  return { data: items.map(listDto), total };
+};
 
 /**
- * Every project MPR in the State, for the State admin and the M&E admin.
- * Filters: status, financialYear ("2026-27"), district, headCode, search
- * (report number, project ID or project name).
+ * Every project MPR in the State, for HQ and the M&E administrator.
+ * Filters: status (status or group), financialYear ("2026-27"), district, headCode,
+ * entryMode, search (report number, project ID or name, department).
  */
-export const listAll = async ({ status, financialYear, district, headCode, search, page, limit } = {}) => {
-  const filter = { ...statusFilter(status) };
+export const listAll = async ({ status, financialYear, district, headCode, entryMode, search, page, limit } = {}) => {
+  const filter = { status: { $ne: S.DRAFT } };
   if (typeof financialYear === 'string' && FY_LABEL.test(financialYear.trim())) filter.financialYear = financialYear.trim();
   if (typeof district === 'string' && district.trim()) filter.district = district.trim();
   if (typeof headCode === 'string' && headCode.trim()) filter['head.code'] = headCode.trim();
+  if (Object.values(MPR_ENTRY_MODE).includes(entryMode)) filter.entryMode = entryMode === MPR_ENTRY_MODE.PIA ? { $ne: MPR_ENTRY_MODE.DISTRICT } : entryMode;
   if (typeof search === 'string' && search.trim()) {
     const term = new RegExp(escapeRegex(search.trim().slice(0, 60)), 'i');
     filter.$or = [{ mprNo: term }, { projectCode: term }, { projectTitle: term }, { departmentName: term }];
   }
-  const result = await paginateList(filter, page, limit);
+  const wanted = statusQuery(status);
+  const result = await paginateList(wanted.status ? { ...filter, $and: [{ status: wanted.status }, { status: { $ne: S.DRAFT } }] } : filter, page, limit);
 
   // Counts per status for the same scope (ignoring the status filter), for the summary strip.
-  const { status: ignored, ...scope } = filter;
-  const grouped = await ProjectMPR.aggregate([{ $match: scope }, { $group: { _id: '$status', count: { $sum: 1 }, spent: { $sum: '$totals.financialCurrentLakh' } } }]);
-  const counts = Object.fromEntries(Object.values(PROJECT_MPR_STATUS).map((key) => [key, 0]));
+  const grouped = await ProjectMPR.aggregate([{ $match: filter }, { $group: { _id: '$status', count: { $sum: 1 }, spent: { $sum: '$totals.financialCurrentLakh' } } }]);
+  const counts = Object.fromEntries(Object.values(S).filter((key) => key !== S.DRAFT).map((key) => [key, 0]));
   let spentLakh = 0;
-  grouped.forEach((row) => { counts[row._id] = row.count; spentLakh += Math.round((row.spent || 0) * MONEY_SCALE); });
+  grouped.forEach((row) => { counts[row._id] = row.count; if (row._id !== S.REJECTED) spentLakh += Math.round((row.spent || 0) * MONEY_SCALE); });
   return { ...result, summary: { counts, total: grouped.reduce((sum, row) => sum + row.count, 0), spentLakh: fromMoney(spentLakh) } };
 };
 
 export const listForProject = async (projectId, user) => {
   const project = await findProject(projectId);
   if (!canReadProject(project, user)) throw forbidden('You do not have access to this project.');
-  const filter = { project: project._id };
-  // A PIA officer sees only their own departments' reports.
-  if (user.role === USER_ROLES.PIA_OFFICER) filter.departmentId = { $in: assignedDepartments(project, user).map((d) => d.departmentId) };
+  const filter = { project: project._id, $or: [{ status: { $ne: S.DRAFT } }, { submittedBy: user._id }] };
+  // A PIA user sees only its own departments' reports.
+  if (user.role === USER_ROLES.PIA_OFFICER) filter.departmentId = { $in: piaDepartmentsOf(project, user).map((d) => d.departmentId) };
   const items = await ProjectMPR.find(filter).select('-activities -revisionHistory').populate('submittedBy', 'name')
     .sort({ periodIndex: -1, departmentName: 1 }).limit(500).lean();
   return items.map(listDto);
 };
 
+/** Evidence can be changed by the Maker until the first reviewer has acted on the report. */
+export const evidenceEditable = (mpr) => [S.DRAFT, S.RETURNED_FOR_CORRECTION, firstStageOf(mpr.entryMode)].includes(mpr.status);
+
 export const getMpr = async (mprId, user) => {
   if (!isValidId(mprId)) throw notFound('Report not found.');
   const mpr = await ProjectMPR.findById(mprId)
-    .populate('submittedBy', 'name email')
+    .populate('submittedBy', 'name email designation')
     .populate('reviewedBy', 'name')
+    .populate('verifiedBy', 'name')
     .populate('revisionHistory.changedBy', 'name role')
     .lean();
   if (!mpr) throw notFound('Report not found.');
   const project = await findProject(String(mpr.project));
-
-  const mine = user.role === USER_ROLES.PIA_OFFICER
-    && assignedDepartments(project, user).some((department) => String(department.departmentId) === String(mpr.departmentId));
-  const allowed = user.role === USER_ROLES.PIA_OFFICER ? mine : canReadProject(project, user);
-  if (!allowed) throw forbidden('You do not have access to this report.');
+  if (!canReadReport(project, mpr, user)) throw forbidden('You do not have access to this report.');
+  if (mpr.status === S.DRAFT && !sameId(mpr.submittedBy, user._id)) throw forbidden('This report is still a draft of its Maker.');
 
   const chain = await loadChain(project._id, mpr.departmentId);
   const isLatest = !chain.some((item) => item.periodIndex > mpr.periodIndex);
-  const ownDistrict = user.role === USER_ROLES.DD_LEVEL && user.district === mpr.district;
+  const maker = isReportingMaker(project, mpr, user);
+  const stage = REVIEW_STAGES[mpr.status];
+  const mayAct = Boolean(stage) && canActOnStage(user, mpr);
+  const closed = project.closure?.status === 'CLOSED';
+
+  // Names of everyone who took a step, for the chain display.
+  const stepUserIds = Object.values(mpr.steps || {}).map((step) => step?.by).filter(Boolean);
+  const people = stepUserIds.length ? await User.find({ _id: { $in: stepUserIds } }).select('name').lean() : [];
+  const nameById = new Map(people.map((person) => [String(person._id), person.name]));
+  nameById.set(String(mpr.submittedBy?._id || mpr.submittedBy), mpr.submittedBy?.name || '');
 
   // Month-by-month series for this department (for the trend) and neighbours for navigation.
-  const series = chain.map((item) => ({
+  const series = chain.filter((item) => item.status !== S.DRAFT || String(item._id) === String(mpr._id)).map((item) => ({
     id: String(item._id),
     period: periodLabel(item.periodIndex),
     month: item.reportingMonth,
@@ -743,23 +952,23 @@ export const getMpr = async (mprId, user) => {
     physicalPercent: item.totals?.physicalPercent || 0,
     current: String(item._id) === String(mpr._id),
   }));
-  const position = chain.findIndex((item) => String(item._id) === String(mpr._id));
-  const previous = position > 0 ? chain[position - 1] : null;
-  const next = position >= 0 && position < chain.length - 1 ? chain[position + 1] : null;
+  const position = series.findIndex((item) => item.current);
+  const previous = position > 0 ? series[position - 1] : null;
+  const next = position >= 0 && position < series.length - 1 ? series[position + 1] : null;
 
-  // Funds the State has released to this department, against what it reports as spent.
+  // Expenditure against the department's sanctioned allocation.
   const department = (project.departmentAllocations || []).find((item) => String(item.departmentId) === String(mpr.departmentId));
-  const releases = await BudgetAllocationEntry.find({ project: project._id, departmentId: mpr.departmentId }).select('amountLakh').lean();
-  const releasedUnits = releases.reduce((sum, entry) => sum + toMoney(entry.amountLakh), 0);
   const spentUnits = toMoney(mpr.totals?.financialTotalLakh);
   const budgetUnits = toMoney(department?.totalLakh);
 
+  const laterBlock = 'A later month has already been filed for this department, so this report can no longer be returned or rejected.';
   return {
     ...listDto(mpr),
     project: projectDto(project),
-    submittedBy: mpr.submittedBy ? { name: mpr.submittedBy.name, email: mpr.submittedBy.email } : null,
+    submittedBy: mpr.submittedBy ? { name: mpr.submittedBy.name, email: mpr.submittedBy.email, designation: mpr.submittedBy.designation || '' } : null,
     reviewedBy: mpr.reviewedBy ? { name: mpr.reviewedBy.name } : null,
     reviewNote: mpr.reviewNote || null,
+    verifiedBy: mpr.verifiedBy ? { name: mpr.verifiedBy.name } : null,
     remarks: mpr.remarks || '',
     evidence: (mpr.evidence || []).map((item) => ({
       id: String(item._id), url: item.url, name: item.name || 'File', mimeType: item.mimeType || null, isImage: /^image\//.test(item.mimeType || ''),
@@ -767,152 +976,152 @@ export const getMpr = async (mprId, user) => {
     })),
     evidenceLimit: 6,
     activities: mpr.activities,
-    revisionHistory: (mpr.revisionHistory || []).map((step) => ({ status: step.status, note: step.note, changedAt: step.changedAt, changedBy: step.changedBy?.name || null })),
+    chain: chainOf(mpr, (id) => nameById.get(String(id)) || null),
+    revisionHistory: (mpr.revisionHistory || []).map((step) => ({
+      status: step.status, statusLabel: statusLabel(step.status), action: step.action || null, level: step.level || null,
+      role: step.role || null, designation: step.designation || null, note: step.note, changedAt: step.changedAt, changedBy: step.changedBy?.name || null,
+    })),
     verifiedAt: mpr.verifiedAt || null,
     verificationNote: mpr.verificationNote || null,
+    returnedAt: mpr.returnedAt || null,
+    rejectedAt: mpr.rejectedAt || null,
+    rejectedByRole: mpr.rejectedByRole || null,
     series,
     navigation: {
-      previous: previous ? { id: String(previous._id), period: periodLabel(previous.periodIndex) } : null,
-      next: next ? { id: String(next._id), period: periodLabel(next.periodIndex) } : null,
+      previous: previous ? { id: previous.id, period: previous.period } : null,
+      next: next ? { id: next.id, period: next.period } : null,
     },
     funds: {
       departmentBudgetLakh: fromMoney(budgetUnits),
-      releasedLakh: fromMoney(releasedUnits),
-      installments: releases.length,
       spentLakh: fromMoney(spentUnits),
-      unspentLakh: fromMoney(Math.max(0, releasedUnits - spentUnits)),
-      utilisationPercent: percent(Math.min(spentUnits, releasedUnits), releasedUnits),
-      // Reported expenditure is more than the State has released so far.
-      spentBeyondReleaseLakh: fromMoney(Math.max(0, spentUnits - releasedUnits)),
+      balanceLakh: fromMoney(Math.max(0, budgetUnits - spentUnits)),
+      utilisationPercent: percent(spentUnits, budgetUnits),
     },
     permissions: {
-      canVerify: user.role === USER_ROLES.MND_SUPER_ADMIN && mpr.status === PROJECT_MPR_STATUS.DISTRICT_APPROVED,
-      // The State can send a district-approved report back, under the same "latest month only" rule.
-      canStateReturn: user.role === USER_ROLES.MND_SUPER_ADMIN && mpr.status === PROJECT_MPR_STATUS.DISTRICT_APPROVED && isLatest,
-      stateReturnBlockedReason: user.role === USER_ROLES.MND_SUPER_ADMIN && mpr.status === PROJECT_MPR_STATUS.DISTRICT_APPROVED && !isLatest
-        ? 'A later month has already been filed for this department, so this report can no longer be returned.' : null,
-      canResubmit: mine && mpr.status === PROJECT_MPR_STATUS.RETURNED_TO_PIA,
-      // Evidence is optional and can be changed until the district approves the report.
-      canManageEvidence: mine && [PROJECT_MPR_STATUS.SUBMITTED, PROJECT_MPR_STATUS.RETURNED_TO_PIA].includes(mpr.status),
-      canApprove: ownDistrict && mpr.status === PROJECT_MPR_STATUS.SUBMITTED,
-      // Returning an older report would invalidate the "previous progress" of the ones after it.
-      canReturn: ownDistrict && mpr.status === PROJECT_MPR_STATUS.SUBMITTED && isLatest,
-      returnBlockedReason: ownDistrict && mpr.status === PROJECT_MPR_STATUS.SUBMITTED && !isLatest
-        ? 'A later month has already been filed for this department, so this report can no longer be returned.' : null,
+      // The review step this user may take now, and how it is called.
+      canForward: mayAct && !closed,
+      forwardLabel: stage ? stage.verb : null,
+      awaiting: stage ? stageOwner(mpr.status) : null,
+      // Returning or rejecting an older report would invalidate the "previous progress" of the ones after it.
+      canReturn: mayAct && !closed && isLatest,
+      canReject: mayAct && !closed && isLatest && Boolean(stage?.canReject),
+      returnBlockedReason: mayAct && !isLatest ? laterBlock : null,
+      canEdit: maker && WITH_MAKER.includes(mpr.status) && !closed,
+      canDelete: maker && mpr.status === S.DRAFT,
+      canManageEvidence: maker && evidenceEditable(mpr) && !closed,
     },
   };
 };
 
-// ─── District review ─────────────────────────────────────────────────────────
+// ─── Review chain ────────────────────────────────────────────────────────────
 
-const reviewable = async (mprId, user, session) => {
+const loadForReview = async (mprId, user, session) => {
   if (!isValidId(mprId)) throw notFound('Report not found.');
   const query = ProjectMPR.findById(mprId);
   const mpr = await (session ? query.session(session) : query);
   if (!mpr) throw notFound('Report not found.');
-  if (user.role !== USER_ROLES.DD_LEVEL || !user.district || user.district !== mpr.district) {
-    throw forbidden('This report belongs to another district.');
+  const stage = REVIEW_STAGES[mpr.status];
+  if (!stage) {
+    throw conflict({
+      [S.VERIFIED_BY_STATE]: 'This report has already been verified by the State.',
+      [S.REJECTED]: 'This report was rejected.',
+      [S.DRAFT]: 'This report has not been submitted yet.',
+      [S.RETURNED_FOR_CORRECTION]: 'This report was returned to its Maker for correction.',
+    }[mpr.status] || 'This report is not awaiting review.', 'NOT_IN_REVIEW');
   }
-  if (mpr.status !== PROJECT_MPR_STATUS.SUBMITTED) throw conflict('This report has already been reviewed.', 'ALREADY_REVIEWED');
-  return mpr;
+  if (!canActOnStage(user, mpr)) {
+    throw forbidden(`This report is waiting for the ${stageOwner(mpr.status)}${stage.tier !== TIERS.HQ ? ` of ${mpr.district}${stage.tier === TIERS.PIA ? ` (${mpr.departmentName})` : ''}` : ''}. You cannot act on it${sameId(mpr.submittedBy, user._id) ? ': a Maker cannot review their own report' : ''}.`);
+  }
+  return { mpr, stage };
 };
 
-export const districtApprove = async (mprId, note, user) => {
-  const mpr = await reviewable(mprId, user);
-  const text = String(note ?? '').trim().slice(0, 1000);
+/** Take the current review step: verify / approve, and send the report to the next level. */
+export const forwardMpr = async (mprId, note, user) => {
+  const { mpr, stage } = await loadForReview(mprId, user);
+  const project = await findProject(String(mpr.project));
+  if (project.closure?.status === 'CLOSED') throw conflict('This project is closed.', 'PROJECT_CLOSED');
+  const text = clean(note, 1000);
   const now = new Date();
+  const set = {
+    status: stage.next,
+    stageEnteredAt: now,
+    [`steps.${stage.step}`]: { by: user._id, at: now, note: text },
+  };
+  if (stage.step === 'districtApprover') Object.assign(set, { reviewedBy: user._id, reviewedAt: now, reviewNote: text });
+  if (stage.step === 'hqApprover') Object.assign(set, { verifiedBy: user._id, verifiedAt: now, verificationNote: text });
+
   // Conditional update: two reviewers clicking at once cannot both act.
   const updated = await ProjectMPR.findOneAndUpdate(
-    { _id: mpr._id, status: PROJECT_MPR_STATUS.SUBMITTED },
-    {
-      $set: { status: PROJECT_MPR_STATUS.DISTRICT_APPROVED, reviewedBy: user._id, reviewedAt: now, reviewNote: text },
-      $push: { revisionHistory: { status: PROJECT_MPR_STATUS.DISTRICT_APPROVED, changedBy: user._id, changedAt: now, note: text || 'Approved by district' } },
-    },
+    { _id: mpr._id, status: mpr.status },
+    { $set: set, $push: { revisionHistory: history(user, { status: stage.next, action: 'FORWARDED', level: stage.level, note: text ? `${stage.done}. ${text}` : stage.done }) } },
     { new: true },
   );
-  if (!updated) throw conflict('This report has already been reviewed.', 'ALREADY_REVIEWED');
-  return updated;
+  if (!updated) throw conflict('This report has already moved on. Please reload.', 'STALE');
+  return { mpr: updated, from: mpr.status };
 };
 
-export const returnToPia = async (mprId, reason, user) => {
-  const text = String(reason ?? '').replace(/\s+/g, ' ').trim().slice(0, 1000);
-  if (!text) throw bad('A reason is required to return the report.');
+/** Checks shared by return and reject: only the latest month, and not after the completion report. */
+const assertReversible = async (mpr, session) => {
+  const laterQuery = ProjectMPR.exists({ project: mpr.project, departmentId: mpr.departmentId, periodIndex: { $gt: mpr.periodIndex }, status: { $ne: S.REJECTED } });
+  if (await (session ? laterQuery.session(session) : laterQuery)) {
+    throw conflict('A later month has already been filed for this department, so this report can no longer be returned or rejected.', 'LATER_REPORT_EXISTS');
+  }
+  const owner = await findProject(String(mpr.project), session);
+  if (owner.closure?.status === 'CLOSED') throw conflict('This project is closed. Its reports can no longer be returned.', 'PROJECT_CLOSED');
+  const department = (owner.departmentAllocations || []).find((item) => String(item.departmentId) === String(mpr.departmentId));
+  if (['SUBMITTED', 'DISTRICT_VERIFIED'].includes(department?.completion?.status)) {
+    throw conflict('The completion report of this department has been filed. The district must return the completion report first.', 'COMPLETION_FILED');
+  }
+};
+
+/** Return the report to its reporting Maker with mandatory remarks. It then goes through its whole chain again. */
+export const returnMpr = async (mprId, reason, user) => {
+  const text = clean(reason, 1000);
+  if (text.length < 5) throw bad('Write the remarks for the Maker (at least 5 characters). They are required to return a report.');
   return runInTransaction(async (session) => {
-    const mpr = await reviewable(mprId, user, session);
-    const laterQuery = ProjectMPR.exists({ project: mpr.project, departmentId: mpr.departmentId, periodIndex: { $gt: mpr.periodIndex } });
-    if (await (session ? laterQuery.session(session) : laterQuery)) {
-      throw conflict('A later month has already been filed for this department, so this report can no longer be returned.', 'LATER_REPORT_EXISTS');
-    }
+    const { mpr, stage } = await loadForReview(mprId, user, session);
+    await assertReversible(mpr, session);
     const now = new Date();
-    mpr.status = PROJECT_MPR_STATUS.RETURNED_TO_PIA;
-    mpr.reviewedBy = user._id;
-    mpr.reviewedAt = now;
+    const role = actorLabel(user);
+    mpr.status = S.RETURNED_FOR_CORRECTION;
+    mpr.stageEnteredAt = now;
     mpr.returnReason = text;
-    mpr.returnedByLevel = 'DISTRICT';
-    mpr.revisionHistory.push({ status: PROJECT_MPR_STATUS.RETURNED_TO_PIA, changedBy: user._id, changedAt: now, note: text });
+    mpr.returnedByLevel = stage.level;
+    mpr.returnedByRole = role;
+    mpr.returnedBy = user._id;
+    mpr.returnedAt = now;
+    mpr.steps = {};
+    mpr.reviewedBy = undefined;
+    mpr.reviewedAt = undefined;
+    mpr.reviewNote = undefined;
+    mpr.revisionHistory.push(history(user, { status: S.RETURNED_FOR_CORRECTION, action: 'RETURNED', level: stage.level, note: `Returned by ${role}: ${text}` }));
     await mpr.save(session ? { session } : {});
     return mpr;
   });
 };
 
-/** State (M&E admin) verifies a report the district has approved. */
-export const stateVerify = async (mprId, note, user) => {
-  if (!isValidId(mprId)) throw notFound('Report not found.');
-  if (user.role !== USER_ROLES.MND_SUPER_ADMIN) throw forbidden('Only the M&E admin can verify reports for the State.');
-  const text = String(note ?? '').trim().slice(0, 1000);
-  const now = new Date();
-  // Conditional update: only a district-approved report can be verified, and only once.
-  const updated = await ProjectMPR.findOneAndUpdate(
-    { _id: mprId, status: PROJECT_MPR_STATUS.DISTRICT_APPROVED },
-    {
-      $set: { status: PROJECT_MPR_STATUS.STATE_VERIFIED, verifiedBy: user._id, verifiedAt: now, verificationNote: text },
-      $push: { revisionHistory: { status: PROJECT_MPR_STATUS.STATE_VERIFIED, changedBy: user._id, changedAt: now, note: text || 'Verified by State' } },
-    },
-    { new: true },
-  );
-  if (updated) return updated;
-  const existing = await ProjectMPR.findById(mprId).select('status').lean();
-  if (!existing) throw notFound('Report not found.');
-  throw conflict(existing.status === PROJECT_MPR_STATUS.STATE_VERIFIED
-    ? 'This report has already been verified.'
-    : 'Only a report approved by the district can be verified.', 'NOT_VERIFIABLE');
-};
-
-/**
- * State (M&E admin) returns a district-approved report for correction. It goes
- * back to the PIA officer; after resubmission the district reviews it again.
- */
-export const stateReturn = async (mprId, reason, user) => {
-  if (!isValidId(mprId)) throw notFound('Report not found.');
-  if (user.role !== USER_ROLES.MND_SUPER_ADMIN) throw forbidden('Only the M&E admin can return reports for the State.');
-  const text = String(reason ?? '').replace(/\s+/g, ' ').trim().slice(0, 1000);
-  if (!text) throw bad('A reason is required to return the report.');
+/** An Approver rejects the report with a recorded reason. The report is void and the month can be reported afresh. */
+export const rejectMpr = async (mprId, reason, user) => {
+  const text = clean(reason, 1000);
+  if (text.length < 5) throw bad('Write the reason for rejection (at least 5 characters).');
   return runInTransaction(async (session) => {
-    const query = ProjectMPR.findById(mprId);
-    const mpr = await (session ? query.session(session) : query);
-    if (!mpr) throw notFound('Report not found.');
-    if (mpr.status !== PROJECT_MPR_STATUS.DISTRICT_APPROVED) {
-      throw conflict(mpr.status === PROJECT_MPR_STATUS.STATE_VERIFIED ? 'A verified report cannot be returned.' : 'Only a report approved by the district can be returned by the State.', 'NOT_RETURNABLE');
-    }
-    const laterQuery = ProjectMPR.exists({ project: mpr.project, departmentId: mpr.departmentId, periodIndex: { $gt: mpr.periodIndex } });
-    if (await (session ? laterQuery.session(session) : laterQuery)) {
-      throw conflict('A later month has already been filed for this department, so this report can no longer be returned.', 'LATER_REPORT_EXISTS');
-    }
-    const owner = await findProject(String(mpr.project), session);
-    const ownerDepartment = (owner.departmentAllocations || []).find((item) => String(item.departmentId) === String(mpr.departmentId));
-    if (owner.closure?.status === 'CLOSED') throw conflict('This project is closed. Its reports can no longer be returned.', 'PROJECT_CLOSED');
-    if (['SUBMITTED', 'DISTRICT_VERIFIED'].includes(ownerDepartment?.completion?.status)) {
-      throw conflict('The completion report of this department has been filed. Ask the district to return the completion report first.', 'COMPLETION_FILED');
-    }
+    const { mpr, stage } = await loadForReview(mprId, user, session);
+    if (!stage.canReject) throw forbidden(`The ${stageOwner(mpr.status)} can return this report for correction but cannot reject it. Only an Approver can reject.`);
+    await assertReversible(mpr, session);
     const now = new Date();
-    mpr.status = PROJECT_MPR_STATUS.RETURNED_TO_PIA;
-    mpr.returnReason = text;
-    mpr.returnedByLevel = 'STATE';
-    mpr.revisionHistory.push({ status: PROJECT_MPR_STATUS.RETURNED_TO_PIA, changedBy: user._id, changedAt: now, note: `Returned by State: ${text}` });
+    const role = actorLabel(user);
+    mpr.status = S.REJECTED;
+    mpr.stageEnteredAt = now;
+    mpr.rejectionReason = text;
+    mpr.rejectedBy = user._id;
+    mpr.rejectedAt = now;
+    mpr.rejectedByRole = role;
+    mpr.rejectedKey = String(mpr._id);
+    mpr.revisionHistory.push(history(user, { status: S.REJECTED, action: 'REJECTED', level: stage.level, note: `Rejected by ${role}: ${text}` }));
     await mpr.save(session ? { session } : {});
     return mpr;
   });
 };
 
-/** Reports waiting for district review, per project (used by project lists and detail). */
-export const countAwaitingReview = (projectId) => ProjectMPR.countDocuments({ project: projectId, status: PROJECT_MPR_STATUS.SUBMITTED });
+/** Reports of a project that are in review (used by project lists and detail). */
+export const countAwaitingReview = (projectId) => ProjectMPR.countDocuments({ project: projectId, status: { $in: IN_REVIEW } });

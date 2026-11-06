@@ -1,6 +1,12 @@
 import mongoose from 'mongoose';
 import { SANCTION_STATUS } from '../constants/status.constants.js';
 
+/** Who prepares a department's Monthly Progress Report. */
+export const REPORTING_MODE = {
+  PIA: 'PIA', // the PIA Maker, approved by the PIA Checker and Approver
+  DISTRICT: 'DISTRICT', // District Technical Staff (a District Maker) on behalf of the PIA
+};
+
 const sanctionedTargetSchema = new mongoose.Schema({
   activityId: String,
   activityLabel: String,
@@ -27,7 +33,7 @@ const departmentAllocationSchema = new mongoose.Schema({
   totalLakh: { type: Number, default: 0, min: 0 },
   activityFinancialTotalLakh: { type: Number, default: 0, min: 0 },
   activities: [departmentActivitySchema],
-  // PIA officer of this department, assigned by the district. Only this officer may report its progress.
+  // PIA Maker of this department, assigned by the District Maker. Reports its progress when the reporting mode is PIA.
   piaUserId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   piaAssignedAt: Date,
   piaAssignedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
@@ -43,6 +49,13 @@ const departmentAllocationSchema = new mongoose.Schema({
     reason: String,
     _id: false,
   }],
+  // MPR reporting responsibility, set by the District Maker before any report is filed.
+  // One department has one reporting Maker at a time, so a month can only ever be reported once.
+  reportingMode: { type: String, enum: Object.values(REPORTING_MODE), default: REPORTING_MODE.PIA },
+  // District Technical Staff (a District Maker) mapped to the department; reports it in DISTRICT mode.
+  districtStaffUserId: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  reportingAssignedAt: Date,
+  reportingAssignedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   // Where this department's completion report stands (the report itself is a ProjectCompletion)
   completion: {
     status: { type: String, enum: ['SUBMITTED', 'DISTRICT_VERIFIED', 'RETURNED'] },
@@ -53,9 +66,13 @@ const departmentAllocationSchema = new mongoose.Schema({
 }, { _id: false });
 
 const workflowStepSchema = new mongoose.Schema({
-  action: { type: String, enum: ['CREATED', 'CHECKER_VERIFIED', 'APPROVED', 'REJECTED', 'FORWARDED_TO_DISTRICT', 'DISTRICT_ACCEPTED', 'FORWARDED_TO_PIA', 'PIA_ACCEPTED', 'RETURNED', 'RESUBMITTED', 'REVISED', 'PIA_TRANSFERRED', 'BUDGET_REVERSED', 'COMPLETION_SUBMITTED', 'COMPLETION_VERIFIED', 'COMPLETION_RETURNED', 'CLOSED'] },
+  // BUDGET_REVERSED only appears in the history of projects from before budget allocation was removed.
+  action: { type: String, enum: ['CREATED', 'CHECKER_VERIFIED', 'APPROVED', 'REJECTED', 'FORWARDED_TO_DISTRICT', 'DISTRICT_ACCEPTED', 'FORWARDED_TO_PIA', 'REPORTING_ASSIGNED', 'PIA_ACCEPTED', 'RETURNED', 'RESUBMITTED', 'REVISED', 'PIA_TRANSFERRED', 'BUDGET_REVERSED', 'COMPLETION_SUBMITTED', 'COMPLETION_VERIFIED', 'COMPLETION_RETURNED', 'CLOSED'] },
   performedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   performedAt: { type: Date, default: Date.now },
+  // Snapshot of who acted, as they were at that moment (e.g. "HQ Checker", "Executive Engineer")
+  role: String,
+  designation: String,
   note: String,
 }, { _id: false });
 
@@ -77,14 +94,14 @@ const projectSanctionSchema = new mongoose.Schema({
   },
   dprType: {
     type: String,
-    enum: ['SPRINGSHED', 'STREAMSHED', 'GROUNDWATER'],
+    enum: ['SPRINGSHED', 'STREAMSHED', 'GROUNDWATER', 'POND'],
   },
   dprApplicationNo: {
     type: String,
   },
   projectType: {
     type: String,
-    enum: ['SPRINGSHED', 'STREAMSHED', 'GROUNDWATER'],
+    enum: ['SPRINGSHED', 'STREAMSHED', 'GROUNDWATER', 'POND'],
     required: true,
   },
 
@@ -122,19 +139,8 @@ const projectSanctionSchema = new mongoose.Schema({
   },
   departmentAllocations: [departmentAllocationSchema],
 
-  // Budget released so far. A summary of the BudgetAllocationEntry records,
-  // written in the same transaction as each allocation; `budgetVersion` is the
-  // optimistic lock that stops two concurrent allocations both succeeding.
-  budgetVersion: { type: Number, default: 0 },
   // Optimistic lock for monthly progress reports filed against this project
   mprVersion: { type: Number, default: 0 },
-  budgetAllocation: {
-    totalLakh: { type: Number, default: 0 },
-    releasedLakh: { type: Number, default: 0 },
-    remainingLakh: { type: Number, default: 0 },
-    status: { type: String, enum: ['NOT_ALLOCATED', 'PARTIALLY_ALLOCATED', 'FULLY_ALLOCATED'], default: 'NOT_ALLOCATED' },
-    lastAllocatedAt: Date,
-  },
 
   // Status
   status: {
@@ -185,8 +191,6 @@ const projectSanctionSchema = new mongoose.Schema({
   // District Acceptance
   districtAcceptedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   districtAcceptedAt: Date,
-  fundAllocationOrder: { url: String, publicId: String },
-  allocatedAmountLakh: { type: Number, default: 0 },
 
   // PIA Forwarding
   forwardedToPIA: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
@@ -197,23 +201,16 @@ const projectSanctionSchema = new mongoose.Schema({
   piaAcceptedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   piaAcceptedAt: Date,
 
-  // Closure: set by the State Approver once every department's completion report is verified
+  // Closure: set by the HQ Approver once every department's completion report is verified by the district
   closure: {
     status: { type: String, enum: ['OPEN', 'CLOSED'], default: 'OPEN' },
     closedAt: Date,
     closedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
     note: String,
     sanctionedLakh: Number,
-    releasedLakh: Number,
     expenditureLakh: Number,
-    // Released but not spent: to be refunded to the State
-    unspentLakh: Number,
-    // Sanctioned but never released: lapses as a saving
-    unreleasedLakh: Number,
-    refundStatus: { type: String, enum: ['NOT_APPLICABLE', 'PENDING', 'RECORDED'] },
-    refundReference: String,
-    refundRecordedAt: Date,
-    refundRecordedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+    // Sanctioned but not spent when the project closed
+    balanceLakh: Number,
   },
 
   // Audit trail
@@ -221,13 +218,13 @@ const projectSanctionSchema = new mongoose.Schema({
 
 }, { timestamps: true });
 
-// Indexes
-projectSanctionSchema.index({ sanctionId: 1 });
+// Indexes (sanctionId and projectId are indexed by their unique field definitions)
 projectSanctionSchema.index({ status: 1 });
 projectSanctionSchema.index({ district: 1 });
 projectSanctionSchema.index({ dprId: 1 });
 projectSanctionSchema.index({ forwardedToPIA: 1, isActive: 1 });
 projectSanctionSchema.index({ 'departmentAllocations.piaUserId': 1 });
+projectSanctionSchema.index({ 'departmentAllocations.districtStaffUserId': 1 });
 projectSanctionSchema.index({ district: 1, status: 1 });
 projectSanctionSchema.index({ financialYear: 1 });
 projectSanctionSchema.index({ 'closure.status': 1 });

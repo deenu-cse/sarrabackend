@@ -7,6 +7,8 @@ import {
   suspendUser,
   deactivateUser,
   restoreUser,
+  approveUserHandler,
+  rejectUserHandler,
   getOverviewAnalytics,
   getDistrictAnalytics,
   getAuditLogs,
@@ -46,14 +48,19 @@ const resolveDepartment = async (req, res, next) => {
 
 router.use(verifyAccessToken);
 
-// User management — only SUPER_ADMIN with workflowRole = null
-router.post('/users/invite', requirePureSuperAdmin, validate(inviteUserSchema), resolveDepartment, auditLog('USER_CREATE'), inviteUserHandler);
+// User management by tier. Who may invite, approve or change an account is decided in the
+// controller (userAccess.service): the HQ administrator directly; the HQ Maker and District
+// Makers by request, approved by their tier's Approver.
+const userManagers = requireRole('SUPER_ADMIN', 'DD_LEVEL', 'MND_SUPER_ADMIN');
+router.post('/users/invite', requireRole('SUPER_ADMIN', 'DD_LEVEL'), validate(inviteUserSchema), resolveDepartment, auditLog('USER_REQUEST'), inviteUserHandler);
 router.post('/users', requirePureSuperAdmin, validate(registerSchema), resolveDepartment, auditLog('USER_CREATE'), createUser);
-router.get('/users', getUsers);
-router.patch('/users/:id/toggle-active', requirePureSuperAdmin, auditLog('USER_DEACTIVATE'), toggleUserActive);
-router.patch('/users/:id/suspend', requirePureSuperAdmin, validate(suspendUserSchema), auditLog('USER_SUSPEND'), suspendUser);
-router.patch('/users/:id/deactivate', requirePureSuperAdmin, validate(deactivateUserSchema), auditLog('USER_DEACTIVATE'), deactivateUser);
-router.patch('/users/:id/restore', requirePureSuperAdmin, auditLog('USER_RESTORE'), restoreUser);
+router.get('/users', userManagers, getUsers);
+router.patch('/users/:id/approve', requireRole('SUPER_ADMIN', 'DD_LEVEL'), auditLog('USER_APPROVE'), approveUserHandler);
+router.patch('/users/:id/reject', requireRole('SUPER_ADMIN', 'DD_LEVEL'), auditLog('USER_REJECT'), rejectUserHandler);
+router.patch('/users/:id/toggle-active', requireRole('SUPER_ADMIN', 'DD_LEVEL'), auditLog('USER_DEACTIVATE'), toggleUserActive);
+router.patch('/users/:id/suspend', requireRole('SUPER_ADMIN', 'DD_LEVEL'), validate(suspendUserSchema), auditLog('USER_SUSPEND'), suspendUser);
+router.patch('/users/:id/deactivate', requireRole('SUPER_ADMIN', 'DD_LEVEL'), validate(deactivateUserSchema), auditLog('USER_DEACTIVATE'), deactivateUser);
+router.patch('/users/:id/restore', requireRole('SUPER_ADMIN', 'DD_LEVEL'), auditLog('USER_RESTORE'), restoreUser);
 
 router.get('/analytics/overview', requireRole('SUPER_ADMIN'), getOverviewAnalytics);
 router.get('/analytics/district/:districtName', requireRole('SUPER_ADMIN'), getDistrictAnalytics);
