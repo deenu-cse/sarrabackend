@@ -8,12 +8,15 @@ import * as ctrl from '../controllers/masterData.controller.js';
 /**
  * Master data used by project creation.
  * Reading is open to every authenticated user; adding new master records is
- * limited to state-level admins.
+ * limited to state-level admins, except Gram Panchayats and villages, which
+ * district and PIA officers may add inside their own district.
  */
 const router = Router();
 router.use(verifyAccessToken);
 
 const adminOnly = requireRole(USER_ROLES.SUPER_ADMIN);
+// Gram Panchayats and villages can also be added by district and PIA officers, within their own district.
+const locationMakers = requireRole(USER_ROLES.SUPER_ADMIN, USER_ROLES.DD_LEVEL, USER_ROLES.PIA_OFFICER);
 
 // Locations: District → Block → Gram Panchayat → Village
 router.get('/locations/districts', ctrl.getDistricts);
@@ -22,8 +25,8 @@ router.get('/locations/gram-panchayats', ctrl.getGramPanchayats);
 router.get('/locations/villages', ctrl.getVillages);
 
 router.post('/locations/blocks', adminOnly, auditLog('CREATE_BLOCK'), ctrl.createBlock);
-router.post('/locations/gram-panchayats', adminOnly, auditLog('CREATE_GRAM_PANCHAYAT'), ctrl.createGramPanchayat);
-router.post('/locations/villages', adminOnly, auditLog('CREATE_VILLAGE'), ctrl.createVillage);
+router.post('/locations/gram-panchayats', locationMakers, auditLog('CREATE_GRAM_PANCHAYAT'), ctrl.createGramPanchayat);
+router.post('/locations/villages', locationMakers, auditLog('CREATE_VILLAGE'), ctrl.createVillage);
 
 // Departments
 router.get('/departments', ctrl.getDepartments);

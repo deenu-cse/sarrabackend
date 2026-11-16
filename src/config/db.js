@@ -3,6 +3,7 @@ import logger from './logger.js';
 import { seedMasterData } from '../services/masterData.service.js';
 import { seedOutcomeIndicators } from '../services/projectOutcome.service.js';
 import { seedHead56 } from '../services/head56Master.service.js';
+import { ensureFormIndexes } from '../services/forms.common.js';
 import { startScheduler } from '../services/monitoring.service.js';
 
 const connectDB = async () => {
@@ -29,6 +30,7 @@ const connectDB = async () => {
       await seedMasterData();
       await seedOutcomeIndicators();
       await seedHead56();
+      await ensureFormIndexes();
       startScheduler();
 
       return conn;
