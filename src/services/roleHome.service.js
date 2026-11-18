@@ -36,7 +36,7 @@ const daysSince = (value) => Math.max(0, Math.floor((Date.now() - new Date(value
 
 const S = SANCTION_STATUS;
 const R = PROJECT_MPR_STATUS;
-const SANCTIONED_ON = [S.SANCTIONED, S.FORWARDED_TO_DISTRICT, S.DISTRICT_ACCEPTED, S.FORWARDED_TO_PIA, S.PIA_ACCEPTED];
+const SANCTIONED_ON = [S.SANCTIONED, S.FORWARDED_TO_DISTRICT, S.DISTRICT_ACCEPTED, S.DISTRICT_PENDING_CHECKER, S.DISTRICT_PENDING_APPROVER, S.FORWARDED_TO_PIA, S.PIA_ACCEPTED];
 const isClosed = (project) => project.closure?.status === 'CLOSED';
 const codeOf = (project) => project.projectId || project.sanctionId || '';
 const filed = (department) => ['SUBMITTED', 'DISTRICT_VERIFIED'].includes(department.completion?.status);
@@ -45,7 +45,7 @@ const ready = (department) => (department.reportingMode === REPORTING_MODE.DISTR
 
 const PROJECT_FIELDS = 'projectId sanctionId projectTitle district status closure head totalSanctionedBudgetLakh rejectionReason makerUserId updatedAt createdAt '
   + 'departmentAllocations.departmentId departmentAllocations.departmentName departmentAllocations.totalLakh departmentAllocations.piaUserId departmentAllocations.piaAcceptedAt '
-  + 'departmentAllocations.reportingMode departmentAllocations.districtStaffUserId departmentAllocations.completion';
+  + 'departmentAllocations.reportingMode departmentAllocations.districtStaffUserId departmentAllocations.completion pendingAssignment.stage pendingAssignment.returnReason';
 const REPORT_FIELDS = 'mprNo project projectCode projectTitle district departmentId departmentName periodIndex reportingMonth financialYear status entryMode stageEnteredAt totals.financialCurrentLakh totals.financialTotalLakh totals.physicalPercent totals.financialPercent submittedAt submittedBy reviewedAt updatedAt returnedByRole';
 
 /** Projects and their reports for a scope, loaded once. */
@@ -247,7 +247,7 @@ const districtHome = async (user) => {
   const settings = await getSettings();
   const role = workflowRoleOf(user);
   const reportHref = (id) => `/dashboard/dd/mpr-review/project/${id}`;
-  const scope = { district: user.district, status: { $in: [S.FORWARDED_TO_DISTRICT, S.DISTRICT_ACCEPTED, S.FORWARDED_TO_PIA, S.PIA_ACCEPTED] } };
+  const scope = { district: user.district, status: { $in: [S.FORWARDED_TO_DISTRICT, S.DISTRICT_ACCEPTED, S.DISTRICT_PENDING_CHECKER, S.DISTRICT_PENDING_APPROVER, S.FORWARDED_TO_PIA, S.PIA_ACCEPTED] } };
   const [{ projects, reports }, dl, completions, queue] = await Promise.all([
     load(scope),
     collectDeadlines(settings, { district: user.district }),
@@ -267,7 +267,8 @@ const districtHome = async (user) => {
   let tasks = [];
   if (role === MAKER) {
     const toAccept = open.filter((p) => p.status === S.FORWARDED_TO_DISTRICT);
-    const toAssign = open.filter((p) => [S.DISTRICT_ACCEPTED, S.FORWARDED_TO_PIA].includes(p.status) && (p.departmentAllocations || []).some((d) => !d.piaUserId && !d.districtStaffUserId));
+    const toAssign = open.filter((p) => [S.DISTRICT_ACCEPTED, S.FORWARDED_TO_PIA].includes(p.status) && !p.pendingAssignment?.stage && (p.departmentAllocations || []).some((d) => !d.piaUserId && !d.districtStaffUserId));
+    const returnedAssignments = open.filter((p) => p.pendingAssignment?.stage === 'RETURNED');
     const notAccepted = open.filter((p) => (p.departmentAllocations || []).some((d) => d.piaUserId && !d.piaAcceptedAt && (d.reportingMode || REPORTING_MODE.PIA) === REPORTING_MODE.PIA));
     // As District Technical Staff: departments this user reports on.
     const mineDue = dl.items.filter((item) => item.officerId === String(user._id) && item.reportingMode === REPORTING_MODE.DISTRICT && ['OVERDUE', 'DUE_SOON'].includes(item.state));
@@ -276,14 +277,18 @@ const districtHome = async (user) => {
     tasks = [
       queueTask(queue, reportHref, '/dashboard/dd/mpr-review'),
       toAccept.length && task('accept', 'warning', toAccept.length, `${plural(toAccept.length, 'project')} to receive and accept`, `Forwarded by SARRA HQ: ${toAccept.slice(0, 3).map(codeOf).join(', ')}${toAccept.length > 3 ? ' and more' : ''}.`, many(toAccept, projectHref, '/dashboard/dd/projects'), 'Review'),
-      toAssign.length && task('assign', 'warning', toAssign.length, `${plural(toAssign.length, 'project')} waiting for PIA assignment`, 'A department has no PIA Maker or reporting responsibility yet, so its progress cannot be reported.', many(toAssign, projectHref, '/dashboard/dd/projects'), 'Assign'),
+      toAssign.length && task('assign', 'warning', toAssign.length, `${plural(toAssign.length, 'project')} waiting for PIA assignment`, 'Select the PIA and reporting responsibility; it then goes to the District Checker and Approver.', many(toAssign, projectHref, '/dashboard/dd/projects'), 'Assign'),
+      ...returnedAssignments.map((p) => task(`assign-returned:${p._id}`, 'danger', 1, `PIA assignment of ${codeOf(p)} returned`, p.pendingAssignment?.returnReason || 'Read the remarks, correct the selection and send it again.', projectHref(p), 'Correct')),
       ...myCorrections.map((c) => task(`fix:${c.mprId}`, 'danger', 1, `Correct the ${c.period} report`, `${c.departmentName}, ${c.projectCode}: returned by the ${c.returnedBy}.`, reportHref(c.mprId), 'Open report')),
       ...myDrafts.map((r) => task(`draft:${r._id}`, 'info', 1, `Submit the ${periodLabel(r.periodIndex)} draft`, `${r.departmentName}, ${r.projectCode}: district entry, not yet sent to the District Checker.`, `/dashboard/dd/mprs/new?mprId=${r._id}`, 'Continue')),
       mineDue.length && task('due', mineDue.some((item) => item.state === 'OVERDUE') ? 'danger' : 'info', mineDue.length, `${plural(mineDue.length, 'district-entry report')} to file for ${periodLabel(dl.period)}`, mineDue.slice(0, 3).map((item) => `${item.departmentName} (${item.projectCode})`).join(', '), '/dashboard/dd/mprs/new', 'File report'),
       notAccepted.length && task('pending-accept', 'info', notAccepted.length, `${plural(notAccepted.length, 'project')} not yet accepted by the PIA Maker`, 'The assigned PIA Maker has to accept before PIA reporting can start.', '/dashboard/dd/projects', 'View'),
     ];
   } else {
+    const reviewStage = role === CHECKER ? 'CHECKER' : 'APPROVER';
+    const toReview = open.filter((p) => p.pendingAssignment?.stage === reviewStage);
     tasks = [
+      toReview.length && task('assign-review', 'warning', toReview.length, `${plural(toReview.length, 'PIA assignment')} to ${role === CHECKER ? 'verify' : 'approve'}`, `Selected by the District Maker: ${toReview.slice(0, 3).map(codeOf).join(', ')}${toReview.length > 3 ? ' and more' : ''}.`, many(toReview, projectHref, '/dashboard/dd/projects'), role === CHECKER ? 'Verify' : 'Approve'),
       queueTask(queue, reportHref, '/dashboard/dd/mpr-review'),
       completions.length && task('completion', 'warning', completions.length, `${plural(completions.length, 'completion report')} to verify`, completions.slice(0, 3).map((c) => `${c.departmentName} (${c.projectCode})`).join(', '), `/dashboard/dd/projects/${completions[0].project}#closure`, 'Verify'),
     ];
@@ -379,7 +384,7 @@ const districtRows = (projects, reports, dl = null) => [...new Set(projects.map(
 
 const PIPELINE = [
   [S.PENDING_CHECKER, 'With HQ Checker'], [S.PENDING_APPROVER, 'With HQ Approver'], [S.SANCTIONED, 'Sanctioned'], [S.FORWARDED_TO_DISTRICT, 'Sent to district'],
-  [S.DISTRICT_ACCEPTED, 'District accepted'], [S.FORWARDED_TO_PIA, 'Assigned to PIA'], [S.PIA_ACCEPTED, 'Active'],
+  [S.DISTRICT_ACCEPTED, 'District accepted'], [S.DISTRICT_PENDING_CHECKER, 'Pending District Checker'], [S.DISTRICT_PENDING_APPROVER, 'Pending District Approver'], [S.FORWARDED_TO_PIA, 'Assigned to PIA'], [S.PIA_ACCEPTED, 'Active'],
 ];
 
 const USER_GROUPS = [

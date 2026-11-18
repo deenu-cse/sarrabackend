@@ -41,7 +41,7 @@ const sameText = (a, b) => text(a).toLowerCase() === text(b).toLowerCase();
 
 const PIPELINE = [
   SANCTION_STATUS.PENDING_CHECKER, SANCTION_STATUS.PENDING_APPROVER, SANCTION_STATUS.SANCTIONED,
-  SANCTION_STATUS.FORWARDED_TO_DISTRICT, SANCTION_STATUS.DISTRICT_ACCEPTED, SANCTION_STATUS.FORWARDED_TO_PIA,
+  SANCTION_STATUS.FORWARDED_TO_DISTRICT, SANCTION_STATUS.DISTRICT_ACCEPTED, SANCTION_STATUS.DISTRICT_PENDING_CHECKER, SANCTION_STATUS.DISTRICT_PENDING_APPROVER, SANCTION_STATUS.FORWARDED_TO_PIA,
   SANCTION_STATUS.PIA_ACCEPTED, SANCTION_STATUS.REJECTED,
 ];
 
@@ -266,7 +266,7 @@ export const getProjectAnalytics = async (query = {}) => {
   const missing = expected.filter(([key]) => !filedLastMonth.has(key)).map(([key]) => unitRow(key));
 
   const unassigned = [...units.entries()]
-    .filter(([, unit]) => !readySince(unit.allocation) && [SANCTION_STATUS.DISTRICT_ACCEPTED, SANCTION_STATUS.FORWARDED_TO_PIA].includes(unit.project.status))
+    .filter(([, unit]) => !readySince(unit.allocation) && [SANCTION_STATUS.DISTRICT_ACCEPTED, SANCTION_STATUS.DISTRICT_PENDING_CHECKER, SANCTION_STATUS.DISTRICT_PENDING_APPROVER, SANCTION_STATUS.FORWARDED_TO_PIA].includes(unit.project.status))
     .map(([key]) => unitRow(key));
 
   // Departments whose reported physical progress lags far behind their spending.

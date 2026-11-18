@@ -152,14 +152,40 @@ export const districtAcceptSanction = asyncHandler(async (req, res) => {
   res.status(HTTP_STATUS.OK).json(new ApiResponse(HTTP_STATUS.OK, sanction, 'Project accepted by the district'));
 });
 
-/** PATCH /:id/forward-pia — District Maker assigns PIA Makers and reporting responsibility */
+/** PATCH /:id/forward-pia — District Maker selects PIA Makers and reporting responsibility and sends it to the District Checker */
 export const forwardToPIA = asyncHandler(async (req, res) => {
-  const result = found(await sanctionService.forwardToPIA(req.params.id, req.user, { piaUserId: req.body.piaUserId, assignments: req.body.assignments }));
-  const { sanction, notifyUserIds, staffUserIds, changed } = result;
+  const sanction = found(await sanctionService.submitAssignment(req.params.id, req.user, { piaUserId: req.body.piaUserId, assignments: req.body.assignments }));
+  res.locals.auditMetadata = { stage: 'SUBMITTED', summary: sanction.pendingAssignment?.summary };
+  await notify({ project: sanction, actor: req.user, event: 'DISTRICT_ASSIGNMENT_SUBMITTED' });
+  res.status(HTTP_STATUS.OK).json(new ApiResponse(HTTP_STATUS.OK, sanction, 'Sent to the District Checker'));
+});
+
+/** PATCH /:id/district-verify — District Checker verifies the PIA assignment */
+export const districtVerifyAssignment = asyncHandler(async (req, res) => {
+  const sanction = found(await sanctionService.verifyAssignment(req.params.id, req.user, req.body?.note));
+  res.locals.auditMetadata = { summary: sanction.pendingAssignment?.summary };
+  await notify({ project: sanction, actor: req.user, event: 'DISTRICT_ASSIGNMENT_VERIFIED' });
+  res.status(HTTP_STATUS.OK).json(new ApiResponse(HTTP_STATUS.OK, sanction, 'Verified and sent to the District Approver'));
+});
+
+/** PATCH /:id/district-approve — District Approver approves; the PIA assignment takes effect */
+export const districtApproveAssignment = asyncHandler(async (req, res) => {
+  const result = found(await sanctionService.approveAssignment(req.params.id, req.user, req.body?.note));
+  const { sanction, notifyUserIds, staffUserIds, makerId } = result;
   if (notifyUserIds.length) await notify({ project: sanction, actor: req.user, event: 'PROJECT_FORWARDED_PIA', recipientIds: notifyUserIds });
   if (staffUserIds.length) await notify({ project: sanction, actor: req.user, event: 'REPORTING_ASSIGNED', recipientIds: staffUserIds });
+  if (makerId) await notify({ project: sanction, actor: req.user, event: 'DISTRICT_ASSIGNMENT_APPROVED', recipientIds: [String(makerId)] });
   res.locals.auditMetadata = { piaAssigned: notifyUserIds.length, districtStaffAssigned: staffUserIds.length };
-  res.status(HTTP_STATUS.OK).json(new ApiResponse(HTTP_STATUS.OK, sanction, changed ? 'Assignment saved' : 'No change to the assignment'));
+  res.status(HTTP_STATUS.OK).json(new ApiResponse(HTTP_STATUS.OK, sanction, 'Approved. The project has been sent to the PIA.'));
+});
+
+/** PATCH /:id/district-return — District Checker / Approver returns the PIA assignment to the District Maker */
+export const districtReturnAssignment = asyncHandler(async (req, res) => {
+  const sanction = found(await sanctionService.returnAssignment(req.params.id, req.user, req.body?.reason));
+  res.locals.auditMetadata = { reason: sanction.pendingAssignment?.returnReason };
+  const makerId = sanction.pendingAssignment?.submittedBy;
+  if (makerId) await notify({ project: sanction, actor: req.user, event: 'DISTRICT_ASSIGNMENT_RETURNED', note: sanction.pendingAssignment?.returnReason, recipientIds: [String(makerId)] });
+  res.status(HTTP_STATUS.OK).json(new ApiResponse(HTTP_STATUS.OK, sanction, 'Returned to the District Maker'));
 });
 
 /** PATCH /:id/transfer-pia — hand one department over to another PIA Maker */

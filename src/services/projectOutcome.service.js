@@ -73,7 +73,7 @@ const canRead = (project, user) => {
 };
 
 // Readings are taken on the ground, so they start once the project is sanctioned.
-const RECORDABLE = [SANCTION_STATUS.SANCTIONED, SANCTION_STATUS.FORWARDED_TO_DISTRICT, SANCTION_STATUS.DISTRICT_ACCEPTED, SANCTION_STATUS.FORWARDED_TO_PIA, SANCTION_STATUS.PIA_ACCEPTED];
+const RECORDABLE = [SANCTION_STATUS.SANCTIONED, SANCTION_STATUS.FORWARDED_TO_DISTRICT, SANCTION_STATUS.DISTRICT_ACCEPTED, SANCTION_STATUS.DISTRICT_PENDING_CHECKER, SANCTION_STATUS.DISTRICT_PENDING_APPROVER, SANCTION_STATUS.FORWARDED_TO_PIA, SANCTION_STATUS.PIA_ACCEPTED];
 const recordBlocker = (project, user) => {
   if (!RECORDABLE.includes(project.status)) return 'Outcomes can be recorded after the project is sanctioned.';
   if (isAssignedPia(project, user) || isOwnDistrict(project, user)) return null;
