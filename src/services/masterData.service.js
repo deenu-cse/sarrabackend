@@ -184,11 +184,19 @@ export const listDepartments = async () => {
   return docs.map(toDepartmentDto);
 };
 
+/** "Forest" and "Forest Department" are one department: compare names without the word "department". */
+const departmentCore = (name) => toNameKey(name)
+  .replace(/\b(department|deptt?)\b\.?/g, ' ')
+  .replace(/[^\p{L}\p{N}]+/gu, ' ')
+  .trim();
+
 export const createDepartment = async (rawName, user) => {
   const name = validateName(rawName, 'Department');
   const nameKey = toNameKey(name);
+  const core = departmentCore(name);
 
-  const existing = await Department.findOne({ nameKey }).lean();
+  const existing = await Department.findOne({ nameKey }).lean()
+    || (await Department.find({ isActive: true }).lean()).find((d) => core && departmentCore(d.name) === core);
   if (existing) {
     throw new ApiError(HTTP_STATUS.CONFLICT, `Department "${existing.name}" already exists.`, {
       code: 'DUPLICATE_DEPARTMENT',
