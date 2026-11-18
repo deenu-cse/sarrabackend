@@ -67,13 +67,43 @@ const departmentAllocationSchema = new mongoose.Schema({
 
 const workflowStepSchema = new mongoose.Schema({
   // BUDGET_REVERSED only appears in the history of projects from before budget allocation was removed.
-  action: { type: String, enum: ['CREATED', 'CHECKER_VERIFIED', 'APPROVED', 'REJECTED', 'FORWARDED_TO_DISTRICT', 'DISTRICT_ACCEPTED', 'FORWARDED_TO_PIA', 'REPORTING_ASSIGNED', 'PIA_ACCEPTED', 'RETURNED', 'RESUBMITTED', 'REVISED', 'PIA_TRANSFERRED', 'BUDGET_REVERSED', 'COMPLETION_SUBMITTED', 'COMPLETION_VERIFIED', 'COMPLETION_RETURNED', 'CLOSED'] },
+  action: { type: String, enum: ['CREATED', 'CHECKER_VERIFIED', 'APPROVED', 'REJECTED', 'FORWARDED_TO_DISTRICT', 'DISTRICT_ACCEPTED', 'FORWARDED_TO_PIA', 'REPORTING_ASSIGNED', 'PIA_ACCEPTED', 'DISTRICT_SUBMITTED', 'DISTRICT_VERIFIED', 'DISTRICT_APPROVED', 'DISTRICT_RETURNED', 'RETURNED', 'RESUBMITTED', 'REVISED', 'PIA_TRANSFERRED', 'BUDGET_REVERSED', 'COMPLETION_SUBMITTED', 'COMPLETION_VERIFIED', 'COMPLETION_RETURNED', 'CLOSED'] },
   performedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   performedAt: { type: Date, default: Date.now },
   // Snapshot of who acted, as they were at that moment (e.g. "HQ Checker", "Executive Engineer")
   role: String,
   designation: String,
   note: String,
+}, { _id: false });
+
+/** One department of a PIA / reporting assignment proposed by the District Maker (ids as strings; '' clears the staff). */
+const assignmentItemSchema = new mongoose.Schema({
+  departmentId: String,
+  reportingMode: { type: String, enum: Object.values(REPORTING_MODE) },
+  piaUserId: String,
+  districtStaffUserId: String,
+}, { _id: false });
+
+/**
+ * The District Maker's PIA and reporting assignment while it is reviewed:
+ * District Checker verifies → District Approver approves (then it takes effect),
+ * or either returns it to the District Maker.
+ */
+const pendingAssignmentSchema = new mongoose.Schema({
+  stage: { type: String, enum: ['CHECKER', 'APPROVER', 'RETURNED'] },
+  // Older projects without departments: a single PIA Maker
+  piaUserId: String,
+  assignments: [assignmentItemSchema],
+  summary: String,
+  submittedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  submittedAt: Date,
+  checkedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  checkedAt: Date,
+  checkerNote: String,
+  returnReason: String,
+  returnedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  returnedByRole: String,
+  returnedAt: Date,
 }, { _id: false });
 
 const projectSanctionSchema = new mongoose.Schema({
@@ -192,6 +222,13 @@ const projectSanctionSchema = new mongoose.Schema({
   districtAcceptedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   districtAcceptedAt: Date,
 
+  // District review of the PIA / reporting assignment
+  pendingAssignment: { type: pendingAssignmentSchema, default: undefined },
+  districtCheckedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  districtCheckedAt: Date,
+  districtApprovedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+  districtApprovedAt: Date,
+
   // PIA Forwarding
   forwardedToPIA: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   piaForwardedAt: Date,
@@ -228,6 +265,7 @@ projectSanctionSchema.index({ 'departmentAllocations.districtStaffUserId': 1 });
 projectSanctionSchema.index({ district: 1, status: 1 });
 projectSanctionSchema.index({ financialYear: 1 });
 projectSanctionSchema.index({ 'closure.status': 1 });
+projectSanctionSchema.index({ district: 1, 'pendingAssignment.stage': 1 });
 
 const ProjectSanction = mongoose.model('ProjectSanction', projectSanctionSchema);
 export default ProjectSanction;

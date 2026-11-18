@@ -429,7 +429,7 @@ export const runReminders = async ({ now = new Date() } = {}) => {
 
 // ─── Monthly e-mail summary ──────────────────────────────────────────────────
 
-const SANCTIONED_ON = [SANCTION_STATUS.SANCTIONED, SANCTION_STATUS.FORWARDED_TO_DISTRICT, SANCTION_STATUS.DISTRICT_ACCEPTED, SANCTION_STATUS.FORWARDED_TO_PIA, SANCTION_STATUS.PIA_ACCEPTED];
+const SANCTIONED_ON = [SANCTION_STATUS.SANCTIONED, SANCTION_STATUS.FORWARDED_TO_DISTRICT, SANCTION_STATUS.DISTRICT_ACCEPTED, SANCTION_STATUS.DISTRICT_PENDING_CHECKER, SANCTION_STATUS.DISTRICT_PENDING_APPROVER, SANCTION_STATUS.FORWARDED_TO_PIA, SANCTION_STATUS.PIA_ACCEPTED];
 
 /** Figures of the summary for one month, for the State or for one district. */
 export const buildMonthlySummary = async ({ period, district = null, now = new Date() } = {}) => {

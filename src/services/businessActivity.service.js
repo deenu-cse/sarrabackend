@@ -63,6 +63,29 @@ const PROJECT_ACTIONS = {
     from: 'Forwarded to District',
     to: 'District Accepted'
   },
+  DISTRICT_SUBMITTED: {
+    label: 'PIA assignment sent to District Checker',
+    description: 'District Maker selected the PIA Makers and reporting responsibility.',
+    from: 'District Accepted',
+    to: 'Pending District Checker'
+  },
+  DISTRICT_VERIFIED: {
+    label: 'PIA assignment verified by District Checker',
+    description: 'District Checker verified the PIA assignment and sent it to the District Approver.',
+    from: 'Pending District Checker',
+    to: 'Pending District Approver'
+  },
+  DISTRICT_APPROVED: {
+    label: 'PIA assignment approved by District Approver',
+    description: 'District Approver approved the PIA assignment; the project was sent to the PIA.',
+    from: 'Pending District Approver',
+    to: 'Assigned to PIA'
+  },
+  DISTRICT_RETURNED: {
+    label: 'PIA assignment returned to District Maker',
+    description: 'District Checker or Approver returned the PIA assignment with remarks.',
+    to: 'District Accepted'
+  },
   FORWARDED_TO_PIA: {
     label: 'Assigned to PIA',
     description: 'District Maker assigned the project to a PIA Maker.',

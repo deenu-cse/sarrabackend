@@ -46,6 +46,8 @@ const resolveDepartment = async (req, res, next) => {
   }
 };
 
+
+
 router.use(verifyAccessToken);
 
 // User management by tier. Who may invite, approve or change an account is decided in the

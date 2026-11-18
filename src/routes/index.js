@@ -15,6 +15,7 @@ import projectMprRoutes from './projectMpr.routes.js';
 import projectLifecycleRoutes from './projectLifecycle.routes.js';
 import monitoringRoutes from './monitoring.routes.js';
 import head56Routes from './head56.routes.js';
+import { dnssRoutes, jsaRoutes, meetingRoutes, trainingRoutes } from './forms.routes.js';
 import { apiLimiter } from '../middlewares/rateLimiter.middleware.js';
 import ApiResponse from '../utils/ApiResponse.js';
 import { HTTP_STATUS } from '../constants/http.constants.js';
@@ -44,5 +45,9 @@ router.use('/master', masterDataRoutes);
 router.use('/project-mprs', projectMprRoutes);
 router.use('/monitoring', monitoringRoutes);
 router.use('/head56', head56Routes);
+router.use('/meetings', meetingRoutes);
+router.use('/dnss', dnssRoutes);
+router.use('/trainings', trainingRoutes);
+router.use('/jsa', jsaRoutes);
 
 export default router;

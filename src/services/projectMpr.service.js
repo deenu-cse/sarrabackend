@@ -119,7 +119,7 @@ const findProject = async (projectId, session) => {
 };
 
 // A district can take the reporting responsibility only once it has accepted the project.
-const DISTRICT_HOLDS = [SANCTION_STATUS.DISTRICT_ACCEPTED, SANCTION_STATUS.FORWARDED_TO_PIA, SANCTION_STATUS.PIA_ACCEPTED];
+const DISTRICT_HOLDS = [SANCTION_STATUS.DISTRICT_ACCEPTED, SANCTION_STATUS.DISTRICT_PENDING_CHECKER, SANCTION_STATUS.DISTRICT_PENDING_APPROVER, SANCTION_STATUS.FORWARDED_TO_PIA, SANCTION_STATUS.PIA_ACCEPTED];
 
 const modeOf = (department) => department.reportingMode || REPORTING_MODE.PIA;
 

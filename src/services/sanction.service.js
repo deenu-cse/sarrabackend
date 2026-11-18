@@ -22,8 +22,10 @@ import { HTTP_STATUS } from '../constants/http.constants.js';
  *
  *   SARRA HQ        Maker creates → Checker verifies (or returns to the Maker) →
  *                   Approver sanctions (Sanction ID) → Maker forwards to the district
- *   District        Maker accepts → assigns the PIA Maker and the MPR reporting
+ *   District        Maker accepts → selects the PIA Maker and the MPR reporting
  *                   responsibility of each department (PIA or District Technical Staff)
+ *                   → District Checker verifies → District Approver approves (the
+ *                   assignment takes effect); either can return it to the Maker
  *   PIA             Maker accepts the assigned department → the project becomes active
  *
  * Every transition is a conditional update on the current status, so two users
@@ -216,6 +218,12 @@ export const getPiaCandidates = async (projectId, ddUser) => {
 
   return {
     districtStaff: staff.map(pickOfficer),
+    pending: sanction.pendingAssignment?.stage ? {
+      stage: sanction.pendingAssignment.stage,
+      returnReason: sanction.pendingAssignment.returnReason || null,
+      piaUserId: sanction.pendingAssignment.piaUserId || null,
+      assignments: sanction.pendingAssignment.assignments || [],
+    } : null,
     departments: (sanction.departmentAllocations || []).map((department) => {
       const lock = modeLockReason(department, open.get(String(department.departmentId)));
       return {
@@ -251,8 +259,7 @@ const settleStatus = (sanction) => {
 const officerFor = async (id, query) => (mongoose.isValidObjectId(id) ? User.findOne({ _id: id, ...query }).lean() : null);
 
 /**
- * District Maker assigns the PIA Maker and the MPR reporting responsibility of
- * each department.
+ * Work out a PIA / reporting assignment on `sanction` (in memory, not saved).
  *
  * `assignments` = [{ departmentId, reportingMode: 'PIA' | 'DISTRICT', piaUserId?, districtStaffUserId? }]
  *   PIA mode       a PIA Maker of that department in the district is required; they report.
@@ -263,15 +270,9 @@ const officerFor = async (id, query) => (mongoose.isValidObjectId(id) ? User.fin
  * responsibility cannot change while a report is still with its Maker.
  *
  * Older projects without departments keep the single `piaUserId`.
+ * `assignedBy` is the District Maker who proposed it.
  */
-export const forwardToPIA = async (projectId, ddUser, { piaUserId, assignments } = {}) => {
-  assertDistrictMaker(ddUser);
-  if (!mongoose.isValidObjectId(projectId)) return null;
-  const sanction = await ProjectSanction.findById(projectId);
-  if (!sanction) return null;
-  assertOwnDistrict(ddUser, sanction);
-  if (sanction.closure?.status === 'CLOSED') throw stateConflict('This project is closed.');
-
+const planAssignment = async (sanction, assignedBy, { piaUserId, assignments } = {}) => {
   const departments = sanction.departmentAllocations || [];
   const now = new Date();
   const piaMakers = tierRoleQuery(TIERS.PIA, MAKER);
@@ -287,10 +288,8 @@ export const forwardToPIA = async (projectId, ddUser, { piaUserId, assignments }
     sanction.status = S.FORWARDED_TO_PIA;
     sanction.forwardedToPIA = officer._id;
     sanction.piaForwardedAt = now;
-    sanction.piaForwardedBy = ddUser._id;
-    sanction.workflowHistory.push(historyStep(ddUser, 'FORWARDED_TO_PIA', `Assigned to ${officer.name}`));
-    await sanction.save();
-    return { sanction, notifyUserIds: [String(officer._id)], staffUserIds: [], changed: true };
+    sanction.piaForwardedBy = assignedBy;
+    return { notes: [`PIA Maker ${officer.name}`], notifyUserIds: [String(officer._id)], staffUserIds: [], changed: true, legacy: true };
   }
 
   if (![S.DISTRICT_ACCEPTED, S.FORWARDED_TO_PIA, S.PIA_ACCEPTED].includes(sanction.status)) {
@@ -363,7 +362,7 @@ export const forwardToPIA = async (projectId, ddUser, { piaUserId, assignments }
       const officer = officerById.get(wantedPia);
       department.piaUserId = officer._id;
       department.piaAssignedAt = now;
-      department.piaAssignedBy = ddUser._id;
+      department.piaAssignedBy = assignedBy;
       department.piaAcceptedAt = undefined;
       notifyUserIds.add(String(officer._id));
       notes.push(`${name}: PIA Maker ${officer.name}`);
@@ -372,24 +371,173 @@ export const forwardToPIA = async (projectId, ddUser, { piaUserId, assignments }
       department.reportingMode = mode;
       department.districtStaffUserId = nextStaff || undefined;
       department.reportingAssignedAt = now;
-      department.reportingAssignedBy = ddUser._id;
+      department.reportingAssignedBy = assignedBy;
       if (nextStaff && staffChanges) staffUserIds.add(String(nextStaff));
       const staffName = nextStaff ? (staffById.get(String(nextStaff))?.name || 'District Technical Staff') : null;
       notes.push(`${name}: MPR by ${mode === REPORTING_MODE.DISTRICT ? `District Technical Staff (${staffName})` : 'PIA'}${mode === REPORTING_MODE.PIA && staffName ? `, District Technical Staff ${staffName}` : ''}`);
     }
   }
 
-  if (!notes.length) return { sanction, notifyUserIds: [], staffUserIds: [], changed: false };
+  if (!notes.length) return { notes, notifyUserIds: [], staffUserIds: [], changed: false };
 
   if (sanction.status === S.DISTRICT_ACCEPTED) {
     sanction.piaForwardedAt = now;
-    sanction.piaForwardedBy = ddUser._id;
+    sanction.piaForwardedBy = assignedBy;
   }
   settleStatus(sanction);
-  sanction.workflowHistory.push(historyStep(ddUser, 'REPORTING_ASSIGNED', `Assigned by District Maker — ${notes.join('; ')}`));
+  return { notes, notifyUserIds: [...notifyUserIds], staffUserIds: [...staffUserIds], changed: true };
+};
 
-  await sanction.save();
-  return { sanction, notifyUserIds: [...notifyUserIds], staffUserIds: [...staffUserIds], changed: true };
+const IN_REVIEW = ['CHECKER', 'APPROVER'];
+const REVIEW_STATUSES = [S.DISTRICT_PENDING_CHECKER, S.DISTRICT_PENDING_APPROVER];
+
+/** The assignment as sent by the client, reduced to the fields that are kept ('' clears the staff). */
+const proposalItems = (assignments) => (Array.isArray(assignments) ? assignments : []).map((item) => ({
+  departmentId: typeof item?.departmentId === 'string' ? item.departmentId : '',
+  ...(Object.values(REPORTING_MODE).includes(item?.reportingMode) ? { reportingMode: item.reportingMode } : {}),
+  ...(typeof item?.piaUserId === 'string' && item.piaUserId ? { piaUserId: item.piaUserId } : {}),
+  ...(typeof item?.districtStaffUserId === 'string' || item?.districtStaffUserId === null ? { districtStaffUserId: item.districtStaffUserId || '' } : {}),
+}));
+
+/**
+ * District Maker selects the PIA Maker and the MPR reporting responsibility of
+ * each department and sends it to the District Checker. Nothing changes on the
+ * project until the District Approver approves it.
+ */
+export const submitAssignment = async (projectId, ddUser, { piaUserId, assignments } = {}) => {
+  assertDistrictMaker(ddUser);
+  if (!mongoose.isValidObjectId(projectId)) return null;
+  const sanction = await ProjectSanction.findById(projectId);
+  if (!sanction) return null;
+  assertOwnDistrict(ddUser, sanction);
+  if (sanction.closure?.status === 'CLOSED') throw stateConflict('This project is closed.');
+  if (IN_REVIEW.includes(sanction.pendingAssignment?.stage)) {
+    throw stateConflict(`An assignment of this project is already with the District ${sanction.pendingAssignment.stage === 'CHECKER' ? 'Checker' : 'Approver'}.`);
+  }
+  if (![S.DISTRICT_ACCEPTED, S.FORWARDED_TO_PIA, S.PIA_ACCEPTED].includes(sanction.status)) {
+    throw stateConflict('The project must be accepted by the district before the PIA is assigned.');
+  }
+
+  // Checked now against a copy, and again when the District Approver approves.
+  const plan = await planAssignment(await ProjectSanction.findById(projectId), ddUser._id, { piaUserId, assignments });
+  if (!plan.changed) throw badRequest('Nothing to send: the selection is the same as the current assignment.');
+
+  const summary = plan.notes.join('; ');
+  const set = {
+    pendingAssignment: {
+      stage: 'CHECKER',
+      ...(plan.legacy ? { piaUserId } : { assignments: proposalItems(assignments) }),
+      summary,
+      submittedBy: ddUser._id,
+      submittedAt: new Date(),
+    },
+  };
+  if (sanction.status === S.DISTRICT_ACCEPTED) set.status = S.DISTRICT_PENDING_CHECKER;
+  return transition(projectId, sanction.status, {
+    set,
+    step: historyStep(ddUser, 'DISTRICT_SUBMITTED', `PIA and reporting proposed by the District Maker — ${summary}`),
+    guard: { 'pendingAssignment.stage': { $nin: IN_REVIEW } },
+  });
+};
+
+const assertDistrictRole = (user, role, label) => {
+  if (!isDistrict(user, role)) throw forbidden(`Only the District ${label} can do this.`);
+};
+
+/** District Checker verifies the District Maker's assignment and sends it to the District Approver. */
+export const verifyAssignment = async (projectId, checker, note) => {
+  assertDistrictRole(checker, CHECKER, 'Checker');
+  const sanction = await loadAt(projectId);
+  if (!sanction) return null;
+  assertOwnDistrict(checker, sanction);
+  if (sanction.pendingAssignment?.stage !== 'CHECKER') throw stateConflict('No PIA assignment of this project is waiting for the District Checker.');
+  const text = clean(note, 1000);
+  const now = new Date();
+  const set = {
+    'pendingAssignment.stage': 'APPROVER', 'pendingAssignment.checkedBy': checker._id, 'pendingAssignment.checkedAt': now, 'pendingAssignment.checkerNote': text,
+    districtCheckedBy: checker._id, districtCheckedAt: now,
+  };
+  if (sanction.status === S.DISTRICT_PENDING_CHECKER) set.status = S.DISTRICT_PENDING_APPROVER;
+  return transition(projectId, sanction.status, {
+    set,
+    step: historyStep(checker, 'DISTRICT_VERIFIED', text ? `PIA assignment verified by the District Checker. ${text}` : 'PIA assignment verified by the District Checker'),
+    guard: { 'pendingAssignment.stage': 'CHECKER' },
+  });
+};
+
+/**
+ * District Approver approves the assignment: the PIA Makers and the reporting
+ * responsibility take effect and the PIA Makers are asked to accept.
+ */
+export const approveAssignment = async (projectId, approver, note) => {
+  assertDistrictRole(approver, APPROVER, 'Approver');
+  if (!mongoose.isValidObjectId(projectId)) return null;
+  const sanction = await ProjectSanction.findById(projectId);
+  if (!sanction) return null;
+  assertOwnDistrict(approver, sanction);
+  const proposal = sanction.pendingAssignment;
+  if (proposal?.stage !== 'APPROVER') throw stateConflict('No PIA assignment of this project is waiting for the District Approver.');
+  if (sanction.closure?.status === 'CLOSED') throw stateConflict('This project is closed.');
+
+  const fromStatus = sanction.status;
+  if (REVIEW_STATUSES.includes(sanction.status)) sanction.status = S.DISTRICT_ACCEPTED;
+  const plan = await planAssignment(sanction, proposal.submittedBy, {
+    piaUserId: proposal.piaUserId,
+    assignments: (proposal.assignments || []).map((item) => ({
+      departmentId: item.departmentId, reportingMode: item.reportingMode, piaUserId: item.piaUserId, districtStaffUserId: item.districtStaffUserId,
+    })),
+  });
+  const text = clean(note, 1000);
+  const makerId = proposal.submittedBy;
+  const now = new Date();
+  const step = historyStep(approver, 'DISTRICT_APPROVED', `PIA and reporting approved by the District Approver — ${plan.notes.join('; ') || 'no change'}${text ? `. ${text}` : ''}`);
+
+  // Written in one conditional update, so it applies only if nobody acted on the assignment meanwhile.
+  const updated = await ProjectSanction.findOneAndUpdate(
+    { _id: sanction._id, status: fromStatus, 'pendingAssignment.stage': 'APPROVER' },
+    {
+      $set: {
+        status: sanction.status,
+        isActive: sanction.isActive,
+        departmentAllocations: sanction.toObject().departmentAllocations,
+        ...(plan.legacy ? { forwardedToPIA: sanction.forwardedToPIA } : {}),
+        ...(sanction.piaForwardedAt ? { piaForwardedAt: sanction.piaForwardedAt, piaForwardedBy: sanction.piaForwardedBy } : {}),
+        districtApprovedBy: approver._id,
+        districtApprovedAt: now,
+      },
+      $unset: { pendingAssignment: 1 },
+      $push: { workflowHistory: step },
+    },
+    { new: true },
+  );
+  if (!updated) throw stateConflict('This project has moved on since the page was opened. Reload it and try again.');
+  return { sanction: updated, notifyUserIds: plan.notifyUserIds, staffUserIds: plan.staffUserIds, makerId };
+};
+
+/** District Checker or Approver returns the assignment to the District Maker with remarks. */
+export const returnAssignment = async (projectId, user, reason) => {
+  const sanction = await loadAt(projectId);
+  if (!sanction) return null;
+  assertOwnDistrict(user, sanction);
+  const stage = sanction.pendingAssignment?.stage;
+  const allowed = (stage === 'CHECKER' && isDistrict(user, CHECKER)) || (stage === 'APPROVER' && isDistrict(user, APPROVER));
+  if (!allowed) {
+    throw forbidden(IN_REVIEW.includes(stage)
+      ? `Only the District ${stage === 'CHECKER' ? 'Checker' : 'Approver'} can return this assignment now.`
+      : 'No PIA assignment of this project is under review.');
+  }
+  const text = clean(reason, 1000);
+  if (text.length < 5) throw badRequest('Write the remarks for the District Maker (at least 5 characters).');
+  const set = {
+    'pendingAssignment.stage': 'RETURNED', 'pendingAssignment.returnReason': text, 'pendingAssignment.returnedBy': user._id,
+    'pendingAssignment.returnedByRole': actorLabel(user), 'pendingAssignment.returnedAt': new Date(),
+  };
+  if (REVIEW_STATUSES.includes(sanction.status)) set.status = S.DISTRICT_ACCEPTED;
+  return transition(projectId, sanction.status, {
+    set,
+    step: historyStep(user, 'DISTRICT_RETURNED', `PIA assignment returned to the District Maker: ${text}`),
+    guard: { 'pendingAssignment.stage': stage },
+  });
 };
 
 /** Move one department from its current PIA Maker to a successor, keeping the history. */
@@ -562,6 +710,45 @@ export const piaAccept = async (projectId, piaUser) => {
   return sanction;
 };
 
+/** The District Maker's proposal with officer names, for the District Checker and Approver to review. */
+const describeProposal = async (sanction) => {
+  const proposal = sanction.pendingAssignment;
+  const items = proposal.assignments || [];
+  const ids = [proposal.piaUserId, proposal.submittedBy, proposal.checkedBy, proposal.returnedBy, ...items.flatMap((i) => [i.piaUserId, i.districtStaffUserId])]
+    .filter((id) => id && mongoose.isValidObjectId(String(id)));
+  const people = await User.find({ _id: { $in: ids } }).select('name email designation department').lean();
+  const byId = new Map(people.map((u) => [String(u._id), u]));
+  const person = (id) => {
+    const u = id ? byId.get(String(id)) : null;
+    return u ? { id: String(u._id), name: u.name, designation: u.designation || '', department: u.department || '' } : null;
+  };
+  const departments = new Map((sanction.departmentAllocations || []).map((d) => [String(d.departmentId), d]));
+  return {
+    stage: proposal.stage,
+    summary: proposal.summary || '',
+    pia: person(proposal.piaUserId),
+    assignments: items.map((item) => {
+      const current = departments.get(String(item.departmentId));
+      return {
+        departmentId: item.departmentId,
+        departmentName: current?.departmentName || 'Department',
+        reportingMode: item.reportingMode || current?.reportingMode || 'PIA',
+        pia: person(item.piaUserId) || (current?.piaUserId?._id ? { id: String(current.piaUserId._id), name: current.piaUserId.name, designation: current.piaUserId.designation || '' } : null),
+        districtStaff: item.districtStaffUserId === '' ? null : person(item.districtStaffUserId) || (current?.districtStaffUserId?._id ? { id: String(current.districtStaffUserId._id), name: current.districtStaffUserId.name } : null),
+      };
+    }),
+    submittedBy: person(proposal.submittedBy),
+    submittedAt: proposal.submittedAt || null,
+    checkedBy: person(proposal.checkedBy),
+    checkedAt: proposal.checkedAt || null,
+    checkerNote: proposal.checkerNote || '',
+    returnReason: proposal.returnReason || null,
+    returnedBy: person(proposal.returnedBy),
+    returnedByRole: proposal.returnedByRole || null,
+    returnedAt: proposal.returnedAt || null,
+  };
+};
+
 /**
  * Projects of a PIA user. The Maker sees the departments assigned to them; the
  * PIA Checker and Approver see their department's assignments in their district.
@@ -642,6 +829,7 @@ const LIST_FIELDS = {
   'closure.status': 1, 'location.block': 1, 'location.village': 1,
   'departmentAllocations.departmentName': 1, 'departmentAllocations.piaUserId': 1, 'departmentAllocations.piaAcceptedAt': 1,
   'departmentAllocations.reportingMode': 1, 'departmentAllocations.districtStaffUserId': 1,
+  'pendingAssignment.stage': 1,
 };
 
 /** Projects across the State (HQ and M&E). */
@@ -668,7 +856,7 @@ export const getSanctions = async (filters, page = 1, limit = 10) => {
 
 /** Projects of one district, once HQ has forwarded them. */
 export const getSanctionsForDistrict = async (district, filters, page = 1, limit = 10) => {
-  const visible = { $in: [S.FORWARDED_TO_DISTRICT, S.DISTRICT_ACCEPTED, S.FORWARDED_TO_PIA, S.PIA_ACCEPTED] };
+  const visible = { $in: [S.FORWARDED_TO_DISTRICT, S.DISTRICT_ACCEPTED, S.DISTRICT_PENDING_CHECKER, S.DISTRICT_PENDING_APPROVER, S.FORWARDED_TO_PIA, S.PIA_ACCEPTED] };
   const matchObj = { district };
   applyListFilters(matchObj, filters);
   if (!matchObj.status) matchObj.status = visible;
@@ -711,6 +899,8 @@ export const getSanctionById = async (id) => {
     .populate('departmentAllocations.districtStaffUserId', 'name email designation')
     .populate('departmentAllocations.piaHistory.relievedBy', 'name')
     .populate('piaAcceptedBy', 'name email')
+    .populate('districtCheckedBy', 'name email')
+    .populate('districtApprovedBy', 'name email')
     .populate('workflowHistory.performedBy', 'name')
     .lean();
 
@@ -723,6 +913,7 @@ export const getSanctionById = async (id) => {
       countAwaitingReview(sanction._id),
     ]);
     sanction.unreviewedMprCount = counts.reduce((a, b) => a + b, 0);
+    if (sanction.pendingAssignment?.stage) sanction.pendingAssignment = await describeProposal(sanction);
   }
 
   return sanction;

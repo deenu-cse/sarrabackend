@@ -29,7 +29,7 @@ const clean = (value, max) => String(value ?? '').replace(/\s+/g, ' ').trim().sl
 export const MAX_PHOTOS_PER_UPLOAD = 6;
 const MAX_FILE_BYTES = 10 * 1024 * 1024;
 const IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp'];
-const PHOTOGRAPHABLE = ['SANCTIONED', 'FORWARDED_TO_DISTRICT', 'DISTRICT_ACCEPTED', 'FORWARDED_TO_PIA', 'PIA_ACCEPTED'];
+const PHOTOGRAPHABLE = ['SANCTIONED', 'FORWARDED_TO_DISTRICT', 'DISTRICT_ACCEPTED', 'DISTRICT_PENDING_CHECKER', 'DISTRICT_PENDING_APPROVER', 'FORWARDED_TO_PIA', 'PIA_ACCEPTED'];
 
 const loadProject = async (projectId) => {
   if (!isValidId(projectId)) throw notFound('Project not found.');

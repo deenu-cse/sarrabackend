@@ -119,11 +119,27 @@ router.patch('/:id/district-accept',
   sanctionCtrl.districtAcceptSanction
 );
 
-// Assign PIA Makers and MPR reporting responsibility
+// PIA Makers and MPR reporting responsibility: District Maker selects →
+// District Checker verifies → District Approver approves (either can return it)
 router.patch('/:id/forward-pia',
   requireRole(DD_LEVEL),
   auditLog('ASSIGN_REPORTING'),
   sanctionCtrl.forwardToPIA
+);
+router.patch('/:id/district-verify',
+  requireRole(DD_LEVEL),
+  auditLog('DISTRICT_VERIFY_ASSIGNMENT'),
+  sanctionCtrl.districtVerifyAssignment
+);
+router.patch('/:id/district-approve',
+  requireRole(DD_LEVEL),
+  auditLog('DISTRICT_APPROVE_ASSIGNMENT'),
+  sanctionCtrl.districtApproveAssignment
+);
+router.patch('/:id/district-return',
+  requireRole(DD_LEVEL),
+  auditLog('DISTRICT_RETURN_ASSIGNMENT'),
+  sanctionCtrl.districtReturnAssignment
 );
 
 // --- PIA workflow actions (PIA Maker) ---

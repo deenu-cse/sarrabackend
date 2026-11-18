@@ -91,9 +91,22 @@ export const listChildLocations = async (type, parentId) => {
   return docs.map(toLocationDto);
 };
 
+/** District and PIA officers may add Gram Panchayats and villages only inside their own district. */
+const DISTRICT_BOUND_ROLES = ['DD_LEVEL', 'PIA_OFFICER'];
+const assertWithinOwnDistrict = async (type, parent, user) => {
+  if (!user || !DISTRICT_BOUND_ROLES.includes(user.role)) return;
+  if (type === LOCATION_TYPES.BLOCK) throw new ApiError(HTTP_STATUS.FORBIDDEN, 'Blocks are added by SARRA HQ.');
+  const districtId = parent.type === LOCATION_TYPES.DISTRICT ? parent._id : parent.district;
+  const district = districtId ? await Location.findById(districtId).select('name').lean() : null;
+  if (!user.district || !district || district.name !== user.district) {
+    throw new ApiError(HTTP_STATUS.FORBIDDEN, `You can add ${LOCATION_LABELS[type]}s only in ${user.district || 'your own'} district.`);
+  }
+};
+
 export const createChildLocation = async (type, parentId, rawName, user) => {
   const label = LOCATION_LABELS[type];
   const parent = await getActiveParent(type, parentId);
+  await assertWithinOwnDistrict(type, parent, user);
   const name = validateName(rawName, label);
   const nameKey = toNameKey(name);
 
