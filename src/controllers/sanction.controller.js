@@ -51,9 +51,9 @@ export const createSanction = asyncHandler(async (req, res) => {
 
 /** GET / — List projects */
 export const listSanctions = asyncHandler(async (req, res) => {
-  const { status, district, financialYear, isActive, search, headCode, page = 1, limit = 10 } = req.query;
+  const { status, group, district, financialYear, isActive, search, headCode, page = 1, limit = 10 } = req.query;
   const statusFilter = typeof status === 'string' && status ? status.split(',') : undefined;
-  const result = await sanctionService.getSanctions({ status: statusFilter, district, financialYear, isActive, search, headCode }, page, limit);
+  const result = await sanctionService.getSanctions({ status: statusFilter, group: typeof group === 'string' ? group : undefined, district, financialYear, isActive, search, headCode }, page, limit);
   // Return paginated shape: { data: { data: [], pagination: {} } }
   res.status(HTTP_STATUS.OK).json(new ApiResponse(HTTP_STATUS.OK, { data: result.data, pagination: result.pagination, summary: result.summary }, 'Projects fetched'));
 });

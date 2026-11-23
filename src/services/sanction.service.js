@@ -2,7 +2,7 @@ import ProjectSanction, { REPORTING_MODE } from '../models/ProjectSanction.model
 import ProjectMPR, { PROJECT_MPR_STATUS } from '../models/ProjectMPR.model.js';
 import generateSanctionId from '../utils/generateSanctionId.js';
 import paginate from '../utils/paginate.js';
-import { SANCTION_STATUS } from '../constants/status.constants.js';
+import { PROJECT_STATUS_GROUPS, SANCTION_STATUS } from '../constants/status.constants.js';
 import MPRPraroop1A from '../models/MPRPraroop1A.model.js';
 import MPRPraroop1B from '../models/MPRPraroop1B.model.js';
 import MPRPraroop1C from '../models/MPRPraroop1C.model.js';
@@ -788,11 +788,16 @@ export const getActiveSanctionsForPIA = async (piaUser) => {
 
 // ─── Lists ───────────────────────────────────────────────────────────────────
 
-/** Shared list filters: free-text search, Head, and open / closed. `status=CLOSED` means closed projects. */
+/**
+ * Shared list filters: free-text search, Head, and open / closed. `status=CLOSED` means closed projects.
+ * `group` = PENDING | APPROVED | REJECTED (Project Status); a stage in `status` narrows it further.
+ */
 const applyListFilters = (matchObj, filters = {}) => {
   const status = Array.isArray(filters.status) ? filters.status : (filters.status ? [filters.status] : []);
+  const group = Object.hasOwn(PROJECT_STATUS_GROUPS, filters.group) ? PROJECT_STATUS_GROUPS[filters.group] : null;
   if (status.includes('CLOSED')) matchObj['closure.status'] = 'CLOSED';
   else if (status.length) { matchObj.status = status.length === 1 ? status[0] : { $in: status }; matchObj['closure.status'] = { $ne: 'CLOSED' }; }
+  else if (group) matchObj.status = { $in: group };
   if (filters.headCode) matchObj['head.code'] = filters.headCode;
   const term = typeof filters.search === 'string' ? filters.search.trim().slice(0, 80) : '';
   if (term) {

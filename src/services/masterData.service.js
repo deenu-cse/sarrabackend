@@ -141,15 +141,25 @@ export const createChildLocation = async (type, parentId, rawName, user) => {
  * Resolve and verify a full District → Block → Gram Panchayat → Village chain.
  * Throws when any node is missing or does not belong to the node above it.
  */
+/**
+ * District → Block → Gram Panchayat → Village of a project. Only the district is required;
+ * Block, Gram Panchayat and Village are optional, but each one needs the level above it.
+ * Levels not given are returned as null.
+ */
 export const resolveLocationChain = async ({ districtId, blockId, gramPanchayatId, villageId }) => {
+  const given = (id) => id !== undefined && id !== null && id !== '';
   assertObjectId(districtId, 'District');
-  assertObjectId(blockId, 'Block');
-  assertObjectId(gramPanchayatId, 'Gram Panchayat');
-  assertObjectId(villageId, 'Village');
+  if (given(gramPanchayatId) && !given(blockId)) throw new ApiError(HTTP_STATUS.BAD_REQUEST, 'Select the block of the Gram Panchayat.');
+  if (given(villageId) && !given(gramPanchayatId)) throw new ApiError(HTTP_STATUS.BAD_REQUEST, 'Select the Gram Panchayat of the village.');
+  if (given(blockId)) assertObjectId(blockId, 'Block');
+  if (given(gramPanchayatId)) assertObjectId(gramPanchayatId, 'Gram Panchayat');
+  if (given(villageId)) assertObjectId(villageId, 'Village');
 
-  const docs = await Location.find({ _id: { $in: [districtId, blockId, gramPanchayatId, villageId] }, isActive: true }).lean();
+  const ids = [districtId, blockId, gramPanchayatId, villageId].filter(given);
+  const docs = await Location.find({ _id: { $in: ids }, isActive: true }).lean();
   const byId = new Map(docs.map((d) => [String(d._id), d]));
   const pick = (id, type) => {
+    if (!given(id)) return null;
     const doc = byId.get(String(id));
     if (!doc || doc.type !== type) throw new ApiError(HTTP_STATUS.BAD_REQUEST, `The selected ${LOCATION_LABELS[type]} was not found.`);
     return doc;
@@ -160,13 +170,13 @@ export const resolveLocationChain = async ({ districtId, blockId, gramPanchayatI
   const gramPanchayat = pick(gramPanchayatId, LOCATION_TYPES.GRAM_PANCHAYAT);
   const village = pick(villageId, LOCATION_TYPES.VILLAGE);
 
-  if (String(block.parent) !== String(district._id)) {
+  if (block && String(block.parent) !== String(district._id)) {
     throw new ApiError(HTTP_STATUS.BAD_REQUEST, `Block "${block.name}" does not belong to ${district.name} district.`);
   }
-  if (String(gramPanchayat.parent) !== String(block._id)) {
+  if (gramPanchayat && String(gramPanchayat.parent) !== String(block._id)) {
     throw new ApiError(HTTP_STATUS.BAD_REQUEST, `Gram Panchayat "${gramPanchayat.name}" does not belong to ${block.name} block.`);
   }
-  if (String(village.parent) !== String(gramPanchayat._id)) {
+  if (village && String(village.parent) !== String(gramPanchayat._id)) {
     throw new ApiError(HTTP_STATUS.BAD_REQUEST, `Village "${village.name}" does not belong to ${gramPanchayat.name} Gram Panchayat.`);
   }
   return { district, block, gramPanchayat, village };
@@ -184,11 +194,19 @@ export const listDepartments = async () => {
   return docs.map(toDepartmentDto);
 };
 
+/** "Forest" and "Forest Department" are one department: compare names without the word "department". */
+const departmentCore = (name) => toNameKey(name)
+  .replace(/\b(department|deptt?)\b\.?/g, ' ')
+  .replace(/[^\p{L}\p{N}]+/gu, ' ')
+  .trim();
+
 export const createDepartment = async (rawName, user) => {
   const name = validateName(rawName, 'Department');
   const nameKey = toNameKey(name);
+  const core = departmentCore(name);
 
-  const existing = await Department.findOne({ nameKey }).lean();
+  const existing = await Department.findOne({ nameKey }).lean()
+    || (await Department.find({ isActive: true }).lean()).find((d) => core && departmentCore(d.name) === core);
   if (existing) {
     throw new ApiError(HTTP_STATUS.CONFLICT, `Department "${existing.name}" already exists.`, {
       code: 'DUPLICATE_DEPARTMENT',
