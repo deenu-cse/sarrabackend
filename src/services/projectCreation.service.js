@@ -287,9 +287,10 @@ export const contentToDocument = (content) => ({
   department: content.departmentAllocations.map((a) => a.departmentName).join(', '),
   location: {
     districtId: content.district._id, district: content.district.name,
-    blockId: content.block._id, block: content.block.name,
-    gramPanchayatId: content.gramPanchayat._id, gramPanchayat: content.gramPanchayat.name,
-    villageId: content.village._id, village: content.village.name,
+    // Block, Gram Panchayat and Village are optional; a level that was not selected is left out.
+    blockId: content.block?._id, block: content.block?.name,
+    gramPanchayatId: content.gramPanchayat?._id, gramPanchayat: content.gramPanchayat?.name,
+    villageId: content.village?._id, village: content.village?.name,
   },
   approvalDates: content.approvalDates,
   numberOfPIA: content.numberOfPIA,
